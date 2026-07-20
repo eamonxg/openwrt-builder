@@ -1,0 +1,188 @@
+name: build
+on:
+  workflow_call:
+    inputs:
+      build: { required: true, type: string }
+      source_repo: { required: true, type: string }
+      source_ref: { required: true, type: string }
+      source_sha: { required: true, type: string }
+      target: { required: true, type: string }
+      devices: { required: false, type: string, default: '' }
+      digest: { required: true, type: string }
+      test_only: { required: false, type: boolean, default: false }
+      clean_build: { required: false, type: boolean, default: false }
+
+jobs:
+  build:
+    name: ${{ inputs.source_repo }}@${{ inputs.source_ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD: ${{ inputs.build }}
+      SOURCE_REPO: ${{ inputs.source_repo }}
+      SOURCE_REF: ${{ inputs.source_ref }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      TARGET: ${{ inputs.target }}
+      DEVICES: ${{ inputs.devices }}
+      DIGEST: ${{ inputs.digest }}
+    steps:
+      # Order matters: apt first (it needs room on the root filesystem, which the
+      # next step claims almost all of), then the disk merge, then any checkout —
+      # the merge mounts a volume over the workspace and hides whatever was there.
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -yqq update
+          sudo -E apt-get -yqq install dos2unix libfuse-dev
+          sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+
+      # The root filesystem alone cannot hold an OpenWrt tree plus its build
+      # output; runners carry a second, larger disk at /mnt that goes unused.
+      # This merges both into one LVM volume mounted at the workspace, so every
+      # path below stays as written.
+      - name: Merge both runner disks into the workspace
+        if: ${{ !inputs.test_only }}
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 2048        # apt, /tmp and the runner's own logs live on
+          temp-reserve-mb: 128
+          swap-size-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Checkout builder
+        uses: actions/checkout@v7
+        with:
+          path: builder
+
+      - name: Checkout OpenWrt source (pinned SHA)
+        run: |
+          set -euo pipefail
+          git init openwrt
+          cd openwrt
+          git remote add origin "https://github.com/${SOURCE_REPO}.git"
+          git fetch --depth=1 origin "$SOURCE_SHA"
+          git checkout -q FETCH_HEAD
+          echo "source: ${SOURCE_REPO}@${SOURCE_SHA} (${SOURCE_REF})"
+
+      - name: Toolchain & ccache cache
+        if: ${{ !inputs.test_only && !inputs.clean_build }}
+        uses: HiGarfield/cachewrtbuild@main
+        with:
+          ccache: true
+          mixkey: ${{ inputs.source_repo }}-${{ inputs.target }}
+          prefix: ${{ github.workspace }}/openwrt
+
+      - name: Feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Add third-party packages
+        run: bash builder/scripts/clone-packages.sh builder/firmware/packages.ini openwrt
+
+      - name: Files overlay (uci-defaults + board.d)
+        run: |
+          mkdir -p openwrt/files/etc/uci-defaults
+          cp builder/firmware/uci-defaults/* openwrt/files/etc/uci-defaults/
+          bash builder/scripts/gen-firmware-defaults.sh builder/firmware/settings.ini openwrt/files
+          chmod +x openwrt/files/etc/uci-defaults/*
+          if [ -d openwrt/files/etc/board.d ]; then chmod +x openwrt/files/etc/board.d/*; fi
+
+      - name: Generate config
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          bash ../builder/scripts/gen-config.sh "$TARGET" $DEVICES > .config
+          # what gets built is decided here and only here: common.config for every
+          # build, then this build's overlay on top
+          cat ../builder/firmware/config/common.config >> .config
+          if [ -f "../builder/firmware/config/${BUILD}.config" ]; then
+            cat "../builder/firmware/config/${BUILD}.config" >> .config
+          fi
+          make defconfig
+
+      - name: 'Guard: devices & packages alive'
+        working-directory: openwrt
+        run: |
+          # every CONFIG_PACKAGE_*=y we asked for must survive defconfig, in both layers
+          # shellcheck disable=SC2086
+          bash ../builder/scripts/check-selected.sh .config "$TARGET" ../builder/firmware/config/common.config $DEVICES
+          if [ -f "../builder/firmware/config/${BUILD}.config" ]; then
+            # shellcheck disable=SC2086
+            bash ../builder/scripts/check-selected.sh .config "$TARGET" "../builder/firmware/config/${BUILD}.config" $DEVICES
+          fi
+
+      - name: Upload final config (test-only ends here)
+        uses: actions/upload-artifact@v4
+        with:
+          name: config-${{ inputs.build }}
+          path: openwrt/.config
+          # .config is hidden and v4 skips hidden files by default; a missing file must fail, not silently succeed
+          include-hidden-files: true
+          if-no-files-found: error
+
+      - name: Reproducible build env (clean build)
+        if: ${{ inputs.clean_build && !inputs.test_only }}
+        working-directory: openwrt
+        run: |
+          {
+            echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)"
+            echo "KBUILD_BUILD_USER=builder"
+            echo "KBUILD_BUILD_HOST=github"
+          } >> "$GITHUB_ENV"
+
+      - name: Download sources
+        if: ${{ !inputs.test_only }}
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            make download -j"$(nproc)" && break
+            echo "download failed, retry $i..."
+            sleep 5
+          done
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Build firmware
+        if: ${{ !inputs.test_only }}
+        working-directory: openwrt
+        run: make -j"$(nproc)" || make -j1 V=s
+
+      # printed win or lose, so a future "no space left" has numbers to reason from
+      - name: Disk usage
+        if: ${{ !cancelled() && !inputs.test_only }}
+        run: df -h / /mnt "$GITHUB_WORKSPACE"
+
+      - name: Collect artifacts
+        if: ${{ !inputs.test_only }}
+        id: organize
+        run: |
+          set -euo pipefail
+          DATE=$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)
+          bash builder/scripts/collect-artifacts.sh openwrt upload
+          KERNEL=$(find openwrt/bin/targets -name '*.manifest' -exec grep -m1 -oE 'kernel[^0-9]*[0-9]+\.[0-9]+\.[0-9]+' {} \; | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo unknown)
+          MANIFEST=$(find openwrt/bin/targets -name '*.manifest' | head -n1)
+          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+          {
+            echo "date=$DATE"
+            echo "kernel=$KERNEL"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        if: ${{ !inputs.test_only }}
+        env:
+          REPO: ${{ github.repository }}
+          DATE: ${{ steps.organize.outputs.date }}
+          KERNEL: ${{ steps.organize.outputs.kernel }}
+          MANIFEST: ${{ steps.organize.outputs.manifest }}
+        run: bash builder/scripts/publish-release.sh "$MANIFEST" builder/firmware/settings.ini builder/firmware/release.md upload openwrt/package/custom

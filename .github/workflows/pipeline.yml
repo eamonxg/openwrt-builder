@@ -1,0 +1,88 @@
+name: Pipeline
+on:
+  workflow_dispatch:
+    inputs:
+      builds:
+        description: 'Builds to run, comma-separated or all'
+        default: 'all'
+        type: string
+      test_only:
+        description: 'Generate and validate config only, no compile'
+        default: false
+        type: boolean
+      clean_build:
+        description: 'Skip caches for a clean release build'
+        default: false
+        type: boolean
+      source_repo:
+        description: 'Override source repo owner/name (empty = builds.ini)'
+        default: ''
+        type: string
+      source_ref:
+        description: 'Override source ref (empty = builds.ini)'
+        default: ''
+        type: string
+  schedule:
+    - cron: '0 18 * * *'   # 18:00 UTC = 02:00 Beijing, daily; unchanged-upstream builds are skipped
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+      count: ${{ steps.mk.outputs.count }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: mk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BUILDS: ${{ inputs.builds || 'all' }}
+          EVENT_NAME: ${{ github.event_name }}
+          OVERRIDE_REPO: ${{ inputs.source_repo }}
+          OVERRIDE_REF: ${{ inputs.source_ref }}
+        run: bash scripts/make-matrix.sh
+
+  build:
+    name: ${{ matrix.build }}
+    needs: plan
+    if: ${{ needs.plan.outputs.count != '0' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: write
+    with:
+      build: ${{ matrix.build }}
+      source_repo: ${{ matrix.source_repo }}
+      source_ref: ${{ matrix.source_ref }}
+      source_sha: ${{ matrix.source_sha }}
+      target: ${{ matrix.target }}
+      devices: ${{ matrix.devices }}
+      digest: ${{ matrix.digest }}
+      test_only: ${{ inputs.test_only || false }}
+      clean_build: ${{ inputs.clean_build || false }}
+
+  prune:
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.plan.outputs.count != '0' && !(inputs.test_only || false) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KEEP: '3'
+        run: bash scripts/prune-releases.sh

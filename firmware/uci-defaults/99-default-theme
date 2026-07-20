@@ -1,0 +1,5 @@
+#!/bin/sh
+# default theme: shadcn (the pipeline's only uci-defaults customization)
+uci set luci.main.mediaurlbase='/luci-static/shadcn'
+uci commit luci
+exit 0

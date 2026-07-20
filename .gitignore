@@ -1,0 +1,5 @@
+.superpowers/
+.DS_Store
+*.swp
+# process docs (design/plans) stay in the local worktree
+docs/
