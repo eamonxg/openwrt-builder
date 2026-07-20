@@ -20,12 +20,19 @@ export GITHUB_OUTPUT="$tmp/out"
 # shellcheck disable=SC1091
 source "$here/../scripts/make-matrix.sh"
 
-# repo_digest with real resolution (unstubbed)
+# pkg_repos with real resolution (unstubbed): the SHAs it returns feed both the
+# change-detection digest and the release notes' per-repo diff
 real_sha=$(git -C "$tmp/srcrepo" rev-parse HEAD)
+pkgs=$(pkg_repos); pkgs=${pkgs% }
+[ "$pkgs" = "mypkg@$real_sha" ] || { echo "FAIL: pkg_repos must resolve the real ref (got=$pkgs)"; exit 1; }
+
 want=$(printf '%s\n' 'openwrt/openwrt@1111111111111111111111111111111111111111' \
   "mypkg@$real_sha" | sha256 | cut -c1-16)
-got=$(repo_digest openwrt/openwrt 1111111111111111111111111111111111111111)
-[ "$got" = "$want" ] || { echo "FAIL: repo_digest must resolve the real ref (got=$got want=$want)"; exit 1; }
+got=$(repo_digest openwrt/openwrt 1111111111111111111111111111111111111111 "$pkgs")
+[ "$got" = "$want" ] || { echo "FAIL: repo_digest must cover source plus every package repo (got=$got want=$want)"; exit 1; }
+# a moved package repo must change the digest, or a schedule run would skip the rebuild
+moved=$(repo_digest openwrt/openwrt 1111111111111111111111111111111111111111 "mypkg@deadbeef")
+[ "$moved" != "$got" ] || { echo "FAIL: a package repo SHA change must move the digest"; exit 1; }
 
 # last_digest matches the build exactly: the newer x86-old release must not match x86
 mkdir -p "$tmp/bin"
@@ -58,6 +65,10 @@ matrix=$(sed -n 's/^matrix=//p' "$tmp/out")
 [ "$(jq -r '.include[0].source_repo' <<<"$matrix")" = "openwrt/openwrt" ] || { echo "FAIL: default source"; exit 1; }
 [ "$(jq -r '.include[0].source_ref' <<<"$matrix")" = "master" ] || { echo "FAIL: default branch resolution"; exit 1; }
 [ "$(jq -r '.include[0].build' <<<"$matrix")" = "x86" ] || { echo "FAIL: build name"; exit 1; }
+# the resolved package SHAs travel to the build job, which hands them to the
+# notes. resolve_sha is stubbed above, so this is the stub's value, not real_sha
+[ "$(jq -r '.include[0].pkg_repos' <<<"$matrix")" = "mypkg@1111111111111111111111111111111111111111" ] \
+  || { echo "FAIL: pkg_repos must reach the matrix entry"; exit 1; }
 
 # BUILDS filter (by section name)
 : > "$tmp/out"

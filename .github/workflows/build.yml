@@ -9,6 +9,7 @@ on:
       target: { required: true, type: string }
       devices: { required: false, type: string, default: '' }
       digest: { required: true, type: string }
+      pkg_repos: { required: false, type: string, default: '' }
       test_only: { required: false, type: boolean, default: false }
       clean_build: { required: false, type: boolean, default: false }
 
@@ -28,6 +29,9 @@ jobs:
       TARGET: ${{ inputs.target }}
       DEVICES: ${{ inputs.devices }}
       DIGEST: ${{ inputs.digest }}
+      # "name@sha ..." for the third-party repos, resolved once in the plan stage;
+      # the release notes diff it against what the previous release recorded
+      PKG_REPOS: ${{ inputs.pkg_repos }}
     steps:
       # Order matters: apt first (it needs room on the root filesystem, which the
       # next step claims almost all of), then the disk merge, then any checkout —
@@ -169,10 +173,10 @@ jobs:
         run: |
           set -euo pipefail
           DATE=$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)
-          bash builder/scripts/collect-artifacts.sh openwrt upload
+          # upload/ is what ships; meta/ holds profiles.json and every per-device
+          # manifest, which the release notes read and nobody uploads
+          bash builder/scripts/collect-artifacts.sh openwrt upload meta
           KERNEL=$(find openwrt/bin/targets -name '*.manifest' -exec grep -m1 -oE 'kernel[^0-9]*[0-9]+\.[0-9]+\.[0-9]+' {} \; | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo unknown)
-          MANIFEST=$(find openwrt/bin/targets -name '*.manifest' | head -n1)
-          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
           {
             echo "date=$DATE"
             echo "kernel=$KERNEL"
@@ -184,5 +188,7 @@ jobs:
           REPO: ${{ github.repository }}
           DATE: ${{ steps.organize.outputs.date }}
           KERNEL: ${{ steps.organize.outputs.kernel }}
-          MANIFEST: ${{ steps.organize.outputs.manifest }}
-        run: bash builder/scripts/publish-release.sh "$MANIFEST" builder/firmware/settings.ini builder/firmware/release.md upload openwrt/package/custom
+        run: |
+          bash builder/scripts/publish-release.sh meta upload \
+            builder/firmware/settings.ini builder/firmware/packages.ini \
+            builder/firmware/release.md openwrt/package/custom

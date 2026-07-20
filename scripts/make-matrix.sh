@@ -31,14 +31,18 @@ last_digest() { # $1 build -> builder-digest recorded by its latest release (emp
     | sed -n 's/.*builder-digest: `\([0-9a-f]\{16\}\)`.*/\1/p' | head -n1
 }
 
-repo_digest() { # $1 source_repo $2 source_sha — fingerprint of source + all package repo SHAs
+pkg_repos() { # -> "name@sha ..." for every third-party repo, resolved once
+  # records are name|url|ref
+  packages_load "$ROOT/firmware/packages.ini" | while IFS='|' read -r name url ref; do
+    r=${ref:-$(resolve_default_branch "$url")}
+    printf '%s@%s ' "$name" "$(resolve_sha "$url" "$r")"
+  done
+}
+
+repo_digest() { # $1 source_repo $2 source_sha $3 pkg_repos — fingerprint of source + package repos
   {
     printf '%s@%s\n' "$1" "$2"
-    # records are name|url|ref
-    packages_load "$ROOT/firmware/packages.ini" | while IFS='|' read -r name url ref; do
-      r=${ref:-$(resolve_default_branch "$url")}
-      printf '%s@%s\n' "$name" "$(resolve_sha "$url" "$r")"
-    done
+    printf '%s\n' "$3" | tr ' ' '\n' | grep . || true
   } | sha256 | cut -c1-16
 }
 
@@ -56,9 +60,13 @@ check_overlays() { # $1 = |name|name|... — every <name>.config must belong to 
 }
 
 main() {
-  local sel out repo ref url sha digest entry count
+  local sel out repo ref url sha digest entry count pkgs
   sel=${BUILDS:-all}
   out=${GITHUB_OUTPUT:-/dev/stdout}
+  # the third-party repos are the same for every build, so resolve them once;
+  # the SHAs feed both the change-detection digest and the release notes
+  pkgs=$(pkg_repos)
+  pkgs=${pkgs% }
   local entries=()
   local records
   records=$(builds_load "$ROOT/firmware/builds.ini") || die "builds.ini parse failed"
@@ -79,14 +87,14 @@ main() {
     [ -n "$ref" ] || die "cannot resolve default branch of $repo"
     sha=$(resolve_sha "$url" "$ref")
     [ -n "$sha" ] || die "cannot resolve $repo@$ref"
-    digest=$(repo_digest "$repo" "$sha")
+    digest=$(repo_digest "$repo" "$sha" "$pkgs")
     if [ "${EVENT_NAME:-}" = schedule ] && [ "$(last_digest "$name")" = "$digest" ]; then
       log "skip $name: upstream unchanged (digest $digest)"
       continue
     fi
     entry=$(jq -nc --arg p "$name" --arg repo "$repo" --arg ref "$ref" --arg sha "$sha" \
-      --arg t "$target" --arg d "$devs" --arg g "$digest" \
-      '{build:$p,source_repo:$repo,source_ref:$ref,source_sha:$sha,target:$t,devices:$d,digest:$g}')
+      --arg t "$target" --arg d "$devs" --arg g "$digest" --arg k "$pkgs" \
+      '{build:$p,source_repo:$repo,source_ref:$ref,source_sha:$sha,target:$t,devices:$d,digest:$g,pkg_repos:$k}')
     entries+=("$entry")
   done <<<"$records"
   local matrix

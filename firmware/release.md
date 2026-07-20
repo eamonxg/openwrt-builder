@@ -1,22 +1,22 @@
 ## {{build}} · kernel {{kernel}}
 
-| | |
-|---|---|
-| **Devices** | {{devices}} |
-| **Target** | {{generic}} generic image |
-| **Source** | {{source}} |
-| **Changes** | {{changes}} |
+- **Target** `{{target}}`
+- **Source** {{source}}
+- **Upstream changes** {{changes}}
+- **Built** {{built_at}}
+- **Built by** {{build_by}}
 
-### Bundled packages
-| Package | Version |
-|---|---|
+{{images}}
+
 {{packages}}
 
-<details>
-<summary>Flashing & first boot</summary>
+{{package_repos}}
 
-- `factory` image for first install; `sysupgrade` keeps settings; verify downloads against `sha256sums`
+<details>
+<summary>Notes</summary>
+
+- Verify downloads against `sha256sums`
+- A first install on a router follows the Purpose column in order: tftp-boot the initramfs image from U-Boot, then flash the sysupgrade image from the system it brings up
 - Default Wi-Fi: SSID `{{wifi_ssid}}` / password `{{wifi_key}}` (encryption {{wifi_encryption}}; skipped on devices without wireless)
 - Default theme: shadcn (aurora included); UI language follows the browser
-- Build tag: by {{build_by}}
 </details>

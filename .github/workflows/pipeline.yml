@@ -69,6 +69,7 @@ jobs:
       target: ${{ matrix.target }}
       devices: ${{ matrix.devices }}
       digest: ${{ matrix.digest }}
+      pkg_repos: ${{ matrix.pkg_repos }}
       test_only: ${{ inputs.test_only || false }}
       clean_build: ${{ inputs.clean_build || false }}
 
