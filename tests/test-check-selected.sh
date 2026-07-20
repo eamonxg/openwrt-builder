@@ -73,4 +73,47 @@ printf '%s\n' 'CONFIG_TARGET_DEVICE_PACKAGES_mediatek_filogic_DEVICE_cudy_tr3000
 if sh "$sc" "$tmp/dev.config" "$tg" "$tmp/multi.frag" cudy_tr3000-256mb-v1 2>/dev/null; then
   echo "FAIL: every package in a multi-package value must be checked"; exit 1
 fi
+
+# --- image-format switches: not packages, but they decide what a release holds ---
+x=x86/64
+cat > "$tmp/x86.frag" <<'EOF'
+CONFIG_GRUB_IMAGES=y
+CONFIG_ISO_IMAGES=y
+CONFIG_TARGET_ROOTFS_PARTSIZE=512
+CONFIG_TARGET_ROOTFS_INITRAMFS=n
+EOF
+cat > "$tmp/x86.config" <<'EOF'
+CONFIG_TARGET_x86_64=y
+CONFIG_GRUB_IMAGES=y
+CONFIG_ISO_IMAGES=y
+CONFIG_TARGET_ROOTFS_PARTSIZE=512
+# CONFIG_TARGET_ROOTFS_INITRAMFS is not set
+EOF
+sh "$sc" "$tmp/x86.config" "$x" "$tmp/x86.frag" \
+  || { echo "FAIL: a complete image-format fragment must pass"; exit 1; }
+
+# a renamed/nonexistent format switch is exactly the silent failure this guards:
+# the release would just quietly lose its install media
+grep -v 'CONFIG_ISO_IMAGES=y' "$tmp/x86.config" > "$tmp/noiso.config"
+if sh "$sc" "$tmp/noiso.config" "$x" "$tmp/x86.frag" 2>/dev/null; then
+  echo "FAIL: a dropped image-format switch must fail"; exit 1
+fi
+
+# a size we chose on purpose must survive too, or the rootfs silently shrinks
+sed 's/CONFIG_TARGET_ROOTFS_PARTSIZE=512/CONFIG_TARGET_ROOTFS_PARTSIZE=256/' "$tmp/x86.config" > "$tmp/size.config"
+if sh "$sc" "$tmp/size.config" "$x" "$tmp/x86.frag" 2>/dev/null; then
+  echo "FAIL: a numeric value defconfig changed must fail"; exit 1
+fi
+
+# '=n' is checked from the other side: defconfig writes '# ... is not set', never
+# '=n', so the honest assertion is that the symbol did not end up enabled
+sed 's/# CONFIG_TARGET_ROOTFS_INITRAMFS is not set/CONFIG_TARGET_ROOTFS_INITRAMFS=y/' "$tmp/x86.config" > "$tmp/on.config"
+if sh "$sc" "$tmp/on.config" "$x" "$tmp/x86.frag" 2>/dev/null; then
+  echo "FAIL: a symbol we asked to disable must not come back as y"; exit 1
+fi
+# ...and a symbol that is simply absent satisfies '=n' — nothing got enabled
+grep -v 'ROOTFS_INITRAMFS' "$tmp/x86.config" > "$tmp/absent.config"
+sh "$sc" "$tmp/absent.config" "$x" "$tmp/x86.frag" \
+  || { echo "FAIL: '=n' must accept a symbol that is absent entirely"; exit 1; }
+
 echo "PASS: test-check-selected"
