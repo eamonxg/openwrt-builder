@@ -19,5 +19,6 @@
 - A first install on a router follows the Purpose column in order: tftp-boot the initramfs image from U-Boot, then flash the sysupgrade image from the system it brings up
 - Default Wi-Fi: SSID `{{wifi_ssid}}` / password `{{wifi_key}}` (encryption {{wifi_encryption}}; skipped on devices without wireless)
 - Separate 5 GHz SSID: `{{wifi_ssid_5g}}`
+- Default LAN address: `{{lan_ip}}`
 - Default theme: shadcn (aurora included); UI language follows the browser
 </details>

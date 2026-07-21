@@ -59,6 +59,59 @@ check_overlays() { # $1 = |name|name|... — every <name>.config must belong to 
   done
 }
 
+# scan_names <records> -> sets BUILD_NAMES and ALL_NAMES to |name|name|... .
+# Two sets, because an overlay is named after a build only while a settings.ini
+# section may name either a build or one of its devices.
+# Globals rather than a return value on purpose: a die() inside a command
+# substitution runs in a subshell and its exit would never reach the caller.
+BUILD_NAMES=''; ALL_NAMES=''
+scan_names() {
+  local records=$1 name devs d
+  BUILD_NAMES='|'
+  while IFS='|' read -r name _ _ _ devs; do
+    [ "$name" != settings ] || die "builds.ini must not define a section named [settings]: settings.ini uses that name for its global scope"
+    BUILD_NAMES="$BUILD_NAMES$name|"
+  done <<<"$records"
+  # devices in a second pass, so every build name is known before one is
+  # compared against them
+  ALL_NAMES=$BUILD_NAMES
+  while IFS='|' read -r name _ _ _ devs; do
+    for d in $devs; do
+      case "$BUILD_NAMES" in
+        *"|$d|"*) die "'$d' is both a build name and a device id — a settings.ini section named after it would have no single meaning" ;;
+      esac
+      # the same device may appear in two builds; a section named after it
+      # applies to both, so list it once rather than calling that a clash
+      case "$ALL_NAMES" in *"|$d|"*) ;; *) ALL_NAMES="$ALL_NAMES$d|" ;; esac
+    done
+  done <<<"$records"
+}
+
+check_settings() { # $1 = |name|name|... — every settings.ini section must name a build or a device
+  local f="$ROOT/firmware/settings.ini" out secs bad sec
+  [ -f "$f" ] || return 0
+  # Captured before anything is piped: a die() inside ini_load on the left of a
+  # pipe would be swallowed by the shell. The ERR| check earns its place for a
+  # second reason -- ini_load stops at the first syntax error, so a stray line
+  # early in the file would otherwise hide every section header after it and
+  # this guard would pass a typoed section in silence, which is the exact
+  # failure it exists to prevent.
+  out=$(ini_load "$f") || die "parse failed: $f"
+  if printf '%s\n' "$out" | grep -q '^ERR|'; then
+    die "$(printf '%s\n' "$out" | sed -n 's/^ERR|//p' | head -n 1)"
+  fi
+  secs=$(printf '%s\n' "$out" | sed -n 's/^SEC|//p')
+  bad=''
+  for sec in $secs; do
+    [ "$sec" != settings ] || continue
+    case "$1" in
+      *"|$sec|"*) ;;
+      *) bad="$bad $sec" ;;
+    esac
+  done
+  [ -z "$bad" ] || die "firmware/settings.ini section(s) match no build or device in builds.ini:$bad — a section nobody selects is ignored in silence, so every value in it would go missing (defaults for every build belong in [settings])"
+}
+
 main() {
   local sel out repo ref url sha digest entry count pkgs
   sel=${BUILDS:-all}
@@ -72,10 +125,10 @@ main() {
   records=$(builds_load "$ROOT/firmware/builds.ini") || die "builds.ini parse failed"
   local name target prepo pref devs
   # checked against every section, not just the selected ones: a renamed section
-  # leaves an orphan overlay behind whichever build you happen to be running
-  local allnames='|'
-  while IFS='|' read -r name _; do allnames="$allnames$name|"; done <<<"$records"
-  check_overlays "$allnames"
+  # leaves an orphan behind whichever build you happen to be running
+  scan_names "$records"
+  check_overlays "$BUILD_NAMES"
+  check_settings "$ALL_NAMES"
   while IFS='|' read -r name target prepo pref devs; do
     if [ "$sel" != all ]; then
       case ",$sel," in *",$name,"*) ;; *) continue ;; esac

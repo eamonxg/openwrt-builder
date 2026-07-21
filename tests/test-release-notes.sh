@@ -186,4 +186,63 @@ printf '%s\n' 'kernel {{kernal}}' > "$tmp/typo.md"
   sh "$sc" "$tmp/m2" "$tmp/u2" "$tmp/bare" "$pki" "$tmp/nonexistent.md" >/dev/null 2>&1 ) \
   && { echo "FAIL: missing template must fail"; exit 1; }
 
+# ---- how settings scopes surface on the release page ----
+# A key whose value differs between devices cannot be stated as one string, so
+# it resolves to empty and the template drops the whole line -- the one
+# conditional the template already has. Printing a value that is wrong for half
+# the devices would be worse than printing none.
+printf '%s\n' 'ssid={{wifi_ssid}}' 'lan={{lan_ip}}' > "$tmp/t-scope.md"
+notes() { # $1 settings.ini  $2 BUILD  $3 DEVICES  $4 template
+  BUILD=$2 TARGET=x/y DEVICES=$3 SOURCE_REPO=o/r SOURCE_REF=main \
+    SOURCE_SHA=1111111111111111111111111111111111111111 KERNEL=1.2.3 \
+    sh "$sc" "$tmp/meta" "$tmp/up" "$1" "$pki" "$4"
+}
+
+# devices agree -> render as usual
+printf '%s\n' '[settings]' 'WIFI_SSID = Rilakkuma' 'WIFI_KEY = Rilakkuma' \
+  '' '[jd]' 'WIFI_SSID = Rilakkuma_Shared' > "$tmp/agree.ini"
+out=$(notes "$tmp/agree.ini" jd 'jdcloud_re-cs-02 jdcloud_re-ss-01' "$tmp/t-scope.md")
+echo "$out" | grep -qx 'ssid=Rilakkuma_Shared' || { echo "FAIL: agreeing devices must render the value (got: $out)"; exit 1; }
+echo "$out" | grep -q '^lan=' && { echo "FAIL: unset LAN_IP must drop the line"; exit 1; }
+
+# devices disagree -> both lines drop
+printf '%s\n' '[settings]' 'WIFI_SSID = Rilakkuma' 'WIFI_KEY = Rilakkuma' \
+  '' '[jdcloud_re-cs-02]' 'WIFI_SSID = A' 'LAN_IP = 192.168.8.1' \
+  '' '[jdcloud_re-ss-01]' 'WIFI_SSID = B' 'LAN_IP = 192.168.6.1' > "$tmp/disagree.ini"
+out=$(notes "$tmp/disagree.ini" jd 'jdcloud_re-cs-02 jdcloud_re-ss-01' "$tmp/t-scope.md")
+echo "$out" | grep -q '^ssid=' && { echo "FAIL: devices disagree, the SSID line must drop (got: $out)"; exit 1; }
+echo "$out" | grep -q '^lan=' && { echo "FAIL: devices disagree, the LAN line must drop (got: $out)"; exit 1; }
+
+# a build with no devices (x86 and the like) takes the build-level value
+out=$(notes "$tmp/disagree.ini" x86 '' "$tmp/t-scope.md")
+echo "$out" | grep -qx 'ssid=Rilakkuma' || { echo "FAIL: a build with no devices takes the build-level value (got: $out)"; exit 1; }
+
+# {{lan_ip}} renders when the devices agree
+printf '%s\n' '[settings]' 'WIFI_SSID = R' 'WIFI_KEY = R' 'LAN_IP = 10.0.0.1' > "$tmp/lan.ini"
+out=$(notes "$tmp/lan.ini" b 'd_one d_two' "$tmp/t-scope.md")
+echo "$out" | grep -qx 'lan=10.0.0.1' || { echo "FAIL: agreeing LAN_IP must render (got: $out)"; exit 1; }
+
+# devices that all set the same value explicitly agree just as much as devices
+# that all inherit it: the comparison is between devices, not against a
+# build-level baseline they may all deviate from
+printf '%s\n' '[settings]' 'WIFI_SSID = R' 'WIFI_KEY = R' \
+  '' '[d_one]' 'LAN_IP = 192.168.7.1' '' '[d_two]' 'LAN_IP = 192.168.7.1' > "$tmp/samedev.ini"
+out=$(notes "$tmp/samedev.ini" b 'd_one d_two' "$tmp/t-scope.md")
+echo "$out" | grep -qx 'lan=192.168.7.1' || { echo "FAIL: devices agreeing on a value the build scope lacks must render (got: $out)"; exit 1; }
+
+# a single-device build: one device's value is unambiguous by construction
+printf '%s\n' '[settings]' 'WIFI_SSID = R' 'WIFI_KEY = R' '' '[d_one]' 'LAN_IP = 192.168.7.1' > "$tmp/onedev.ini"
+out=$(notes "$tmp/onedev.ini" b 'd_one' "$tmp/t-scope.md")
+echo "$out" | grep -qx 'lan=192.168.7.1' || { echo "FAIL: a single device's value must render (got: $out)"; exit 1; }
+
+# the sae-mixed default must not paper over a disagreement: it is applied per
+# device before the comparison
+printf '%s\n' 'enc={{wifi_encryption}}' > "$tmp/t-enc.md"
+printf '%s\n' '[settings]' 'WIFI_SSID = R' 'WIFI_KEY = R' \
+  '' '[d_one]' 'WIFI_ENCRYPTION = psk2' > "$tmp/enc.ini"
+out=$(notes "$tmp/enc.ini" b 'd_one d_two' "$tmp/t-enc.md")
+echo "$out" | grep -q '^enc=' && { echo "FAIL: one device on psk2, the encryption line must drop (got: $out)"; exit 1; }
+out=$(notes "$tmp/lan.ini" b 'd_one d_two' "$tmp/t-enc.md")
+echo "$out" | grep -qx 'enc=sae-mixed' || { echo "FAIL: unset encryption must still default to sae-mixed (got: $out)"; exit 1; }
+
 echo "PASS: test-release-notes"

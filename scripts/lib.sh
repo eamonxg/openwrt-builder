@@ -75,25 +75,55 @@ EOF3
   _emit
 }
 
-# settings_load <settings.ini>: emit records key|value. Only the [settings]
-# section and known keys are allowed, so a typoed key fails loudly instead of
-# silently doing nothing. Values arrive trimmed by ini_load.
+# settings_load <settings.ini> [scope...]: emit records key|value, narrowest
+# scope first. [settings] is the base; each extra argument selects the
+# same-named section, so a later argument overrides an earlier one and
+# consumers keep taking the first match with head -n 1.
+# An empty value is a real override, not a no-op: it switches off a feature a
+# wider scope turned on.
+# Section names are NOT validated here. One call only knows about the scopes it
+# was handed, so it cannot tell a typo from a section meant for another build --
+# make-matrix.sh checks every section against builds.ini instead, and does it
+# whichever build is running. Unknown KEYS are still fatal everywhere, including
+# in sections this call does not select: a typo is a typo, and its only other
+# symptom would be silence.
 settings_load() {
-  _sl_out=$(ini_load "$1") || die "parse failed: $1"
+  _sl_f=$1; shift
+  _sl_out=$(ini_load "$_sl_f") || die "parse failed: $_sl_f"
   printf '%s\n' "$_sl_out" | grep -q '^ERR|' && die "$(printf '%s\n' "$_sl_out" | sed -n 's/^ERR|//p' | head -n 1)"
   while IFS='|' read -r _tag _a _b _c; do
-    case "$_tag" in
-      SEC) [ "$_a" = settings ] || die "settings.ini allows only the [settings] section, got: [$_a]" ;;
-      KV)
-        case "$_b" in
-          BUILD_BY|WIFI_SSID|WIFI_SSID_5G|WIFI_KEY|WIFI_COUNTRY|WIFI_ENCRYPTION) printf '%s|%s\n' "$_b" "$_c" ;;
-          *) die "unknown key in settings.ini: $_b (allowed: BUILD_BY/WIFI_SSID/WIFI_SSID_5G/WIFI_KEY/WIFI_COUNTRY/WIFI_ENCRYPTION)" ;;
-        esac
-        ;;
+    [ "$_tag" = KV ] || continue
+    case "$_b" in
+      BUILD_BY|WIFI_SSID|WIFI_SSID_5G|WIFI_KEY|WIFI_COUNTRY|WIFI_ENCRYPTION|LAN_IP) ;;
+      *) die "unknown key in $_sl_f: $_b (allowed: BUILD_BY/WIFI_SSID/WIFI_SSID_5G/WIFI_KEY/WIFI_COUNTRY/WIFI_ENCRYPTION/LAN_IP)" ;;
     esac
   done <<EOF5
 $_sl_out
 EOF5
+  # reverse the scope list so the narrowest is emitted first
+  _sl_scopes=''
+  for _sl_s in "$@"; do
+    [ -n "$_sl_s" ] || continue
+    # One argument per scope. An unquoted "$BUILD $DEVICES" arriving as a single
+    # word would still split in the loop below -- but unreversed, so the device
+    # scopes would lose to the build scope and their values would leak into what
+    # callers treat as the build-level baseline. The generated script then comes
+    # out with no case block and one device's values baked in for every board:
+    # wrong, and indistinguishable from correct output at a glance.
+    case "$_sl_s" in
+      *[!A-Za-z0-9_-]*) die "settings scope is not a section name: '$_sl_s' (pass one argument per scope)" ;;
+    esac
+    _sl_scopes="$_sl_s${_sl_scopes:+ }$_sl_scopes"
+  done
+  for _sl_s in $_sl_scopes settings; do
+    while IFS='|' read -r _tag _a _b _c; do
+      [ "$_tag" = KV ] || continue
+      [ "$_a" = "$_sl_s" ] || continue
+      printf '%s|%s\n' "$_b" "$_c"
+    done <<EOF6
+$_sl_out
+EOF6
+  done
 }
 
 # packages_load <packages.ini>: emit records name|git-url|ref

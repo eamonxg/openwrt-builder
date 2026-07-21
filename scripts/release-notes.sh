@@ -26,8 +26,42 @@ custom=${6:-}
 [ -f "$template" ] || die "template not found: $template"
 
 vals=''
-if [ -f "$settings" ]; then vals=$(settings_load "$settings"); fi
+if [ -f "$settings" ]; then vals=$(settings_load "$settings" "${BUILD:-}"); fi
 get() { printf '%s\n' "$vals" | sed -n "s/^$1|//p" | head -n 1; }
+
+# setting <key> [default] -> the value every device of this build agrees on,
+# empty when they do not. A value that differs between devices cannot be stated
+# as one string, and the template already drops a line whose placeholder is
+# empty -- printing a value that is wrong for half the devices would be worse
+# than printing none. The default is applied per device before comparing, so it
+# cannot paper over a disagreement.
+setting() {
+  _sk=$1; _sdef=${2:-}
+  if [ ! -f "$settings" ] || [ -z "${DEVICES:-}" ]; then
+    # No devices listed -> the build-level value is literally what ships.
+    _sv=$(get "$_sk"); [ -n "$_sv" ] || _sv=$_sdef
+    printf '%s' "$_sv"
+    return 0
+  fi
+  # With devices, what ships is each device's value; the build-level one is only
+  # the fallback for a board that is none of them, and that is not a board this
+  # image would be flashed onto. So the devices are compared against each other,
+  # not against a baseline they may all deviate from -- devices that all set the
+  # same value explicitly agree exactly as much as devices that all inherit it.
+  _sv=''; _sfirst=1
+  for _sdev in ${DEVICES:-}; do
+    # captured before the pipe: a die() inside settings_load would be swallowed
+    _srec=$(settings_load "$settings" "${BUILD:-}" "$_sdev")
+    _sx=$(printf '%s\n' "$_srec" | sed -n "s/^$_sk|//p" | head -n 1)
+    [ -n "$_sx" ] || _sx=$_sdef
+    if [ "$_sfirst" = 1 ]; then
+      _sv=$_sx; _sfirst=0
+    elif [ "$_sx" != "$_sv" ]; then
+      return 0
+    fi
+  done
+  printf '%s' "$_sv"
+}
 
 # ---------------------------------------------------------------- devices ----
 
@@ -281,8 +315,6 @@ changes=''
 if [ -n "${PREV_SHA:-}" ] && [ "$PREV_SHA" != "${SOURCE_SHA:-}" ]; then
   changes="[upstream commits since previous build](https://github.com/${SOURCE_REPO}/compare/${PREV_SHA}...${SOURCE_SHA})"
 fi
-wifi_encryption=$(get WIFI_ENCRYPTION)
-[ -n "$wifi_encryption" ] || wifi_encryption=sae-mixed
 # DATE is YYYYMMDD-HHMM, the suffix that keeps same-day tags apart. Spelled out
 # here so the '-2102' in a tag name means something to whoever reads the release.
 built_at=${DATE:-}
@@ -302,12 +334,13 @@ lookup() { # $1 placeholder name -> value ('' means: drop the line)
     target)          printf '%s' "${TARGET:-}" ;;
     source)          printf "%s@\`%s\` (%s)" "${SOURCE_REPO:-}" "$short" "${SOURCE_REF:-}" ;;
     changes)         printf '%s' "$changes" ;;
-    wifi_ssid)       get WIFI_SSID ;;
-    wifi_ssid_5g)    get WIFI_SSID_5G ;;
-    wifi_key)        get WIFI_KEY ;;
-    wifi_country)    get WIFI_COUNTRY ;;
-    wifi_encryption) printf '%s' "$wifi_encryption" ;;
-    build_by)        get BUILD_BY ;;
+    wifi_ssid)       setting WIFI_SSID ;;
+    wifi_ssid_5g)    setting WIFI_SSID_5G ;;
+    wifi_key)        setting WIFI_KEY ;;
+    wifi_country)    setting WIFI_COUNTRY ;;
+    wifi_encryption) setting WIFI_ENCRYPTION sae-mixed ;;
+    lan_ip)          setting LAN_IP ;;
+    build_by)        setting BUILD_BY ;;
     *) die "unknown placeholder {{$1}} in $template" ;;
   esac
 }

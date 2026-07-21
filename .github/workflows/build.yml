@@ -91,7 +91,8 @@ jobs:
         run: |
           mkdir -p openwrt/files/etc/uci-defaults
           cp builder/firmware/uci-defaults/* openwrt/files/etc/uci-defaults/
-          bash builder/scripts/gen-firmware-defaults.sh builder/firmware/settings.ini openwrt/files
+          # shellcheck disable=SC2086
+          bash builder/scripts/gen-firmware-defaults.sh builder/firmware/settings.ini openwrt/files "$BUILD" $DEVICES
           chmod +x openwrt/files/etc/uci-defaults/*
           if [ -d openwrt/files/etc/board.d ]; then chmod +x openwrt/files/etc/board.d/*; fi
 

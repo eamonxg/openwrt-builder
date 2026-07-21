@@ -8,7 +8,7 @@ Config-driven OpenWrt firmware pipeline: edit `firmware/` → Actions builds →
 firmware/                  # you describe the firmware here; everything else builds it
 ├── builds.ini             # ★ which builds exist: one section = one product line
 ├── packages.ini           # ★ where third-party code comes from
-├── settings.ini           # personalization ([settings] section)
+├── settings.ini           # personalization (base + per-build/device overrides)
 ├── release.md             # how the release page reads
 ├── config/                # ★ what each build ticks in menuconfig terms
 │   ├── common.config      #   every build
@@ -74,11 +74,15 @@ ref  = branch|tag|SHA        # optional; default: default branch
 
 **2. Enable it — a `.config` fragment.** Three scopes, pick the narrowest that fits:
 
-| Who gets it | Which file | What to write |
+| Scope | Which package ships | Which value applies |
 |---|---|---|
-| every build | `common.config` | `CONFIG_PACKAGE_luci-app-xxx=y` |
-| one build, all its devices | `<build>.config` | `CONFIG_PACKAGE_luci-app-xxx=y` |
-| one device inside a build | `<build>.config` | two lines, below |
+| every build | `common.config` | `[settings]` in `settings.ini` |
+| one build, all its devices | `<build>.config` | `[<build>]` |
+| one device inside a build | `<build>.config`, two lines (below) | `[<device-id>]` |
+
+The same three scopes, twice. Packages carry the device in the Kconfig symbol
+because OpenWrt's namespace requires it; settings carry it in the section name.
+Either way the device is spelled exactly as `builds.ini`'s `devices =` spells it.
 
 *Every build* — a theme you always want, in `common.config`:
 
@@ -114,7 +118,7 @@ Every scope is guarded: a `=y`/`=m` line dropped by `defconfig`, a per-device li
 ```markdown
 ## {{build}} · kernel {{kernel}}
 
-| **Devices** | {{devices}} |
+| **Target** | {{target}} |
 | **Source** | {{source}} |
 
 ### Bundled packages
@@ -126,30 +130,64 @@ Every scope is guarded: a `=y`/`=m` line dropped by `defconfig`, a per-device li
 - Build tag: by {{build_by}}
 ```
 
-**One rule covers every conditional: a line whose placeholder resolves to empty is dropped whole.** No Wi-Fi configured, no `BUILD_BY`, no previous release to compare against, a generic image with no device list — each simply loses its line. A placeholder that is not recognised is fatal, so a typo cannot quietly blank a row.
+**One rule covers every conditional: a line whose placeholder resolves to empty is dropped whole.** No Wi-Fi configured, no `BUILD_BY`, no `LAN_IP`, no previous release to compare against — each simply loses its line. A placeholder that is not recognised is fatal, so a typo cannot quietly blank a row.
 
 | Placeholder | Value |
 |---|---|
-| `{{build}}` `{{target}}` `{{devices}}` | from that build's section in `builds.ini` |
-| `{{generic}}` | the target, but only when the build lists no devices |
+| `{{build}}` `{{target}}` | from that build's section in `builds.ini` |
 | `{{source}}` | `owner/repo@sha (ref)`, with the SHA the plan stage pinned |
 | `{{changes}}` | compare link against the previous release, empty when there is none |
-| `{{kernel}}` `{{date}}` | from the finished build |
+| `{{kernel}}` `{{built_at}}` | from the finished build |
+| `{{images}}` | the flashing table, discovered from the upload dir — see below |
 | `{{packages}}` | the versions table, discovered — see below |
-| `{{wifi_ssid}}` `{{wifi_ssid_5g}}` `{{wifi_key}}` `{{wifi_country}}` `{{wifi_encryption}}` `{{build_by}}` | from `settings.ini` |
+| `{{package_repos}}` | the third-party plugin repos table, with a compare link per one that changed |
+| `{{wifi_ssid}}` `{{wifi_ssid_5g}}` `{{wifi_key}}` `{{wifi_country}}` `{{wifi_encryption}}` `{{lan_ip}}` `{{build_by}}` | from `settings.ini` |
 
 `{{packages}}` needs no list: it reads the Makefiles of the repos `packages.ini` cloned, and prints a row for each of their packages the firmware actually contains. So a package that a build did not enable, or a `mihomo` variant that does not exist, simply has no row — and adding a plugin never means remembering to update a table. Rows are grouped by source repo, in directory order.
 
 ## Personalization (settings.ini)
 
-Six keys in the `[settings]` section; empty or removed = disabled; a typoed key fails the build early:
+A section name is what it applies to: `[settings]` is the base for everything,
+any other section names a build or one device of a build. The narrower scope
+wins, and every key can be overridden at every scope — there is no list of
+"overridable" keys.
+
+```ini
+[settings]
+WIFI_SSID = Rilakkuma        # everything, unless overridden
+
+[tr3000]                     # one build, all its devices
+WIFI_SSID = Rilakkuma_Cudy
+
+[jdcloud_re-ss-01]           # one device inside a build
+WIFI_SSID = Rilakkuma_Arthur
+LAN_IP    = 192.168.6.1
+```
+
+An **empty value in a narrower scope is a real override**: it switches off what a
+wider one turned on. Removing the key entirely inherits instead. A section
+matching no build or device fails the plan stage, so a typo cannot quietly do
+nothing.
+
+Values that differ between the devices of one build are resolved on the device,
+by a `board_name` case in the generated first-boot script — `files/` is shared
+by the whole build, so it cannot hold two versions of a file. A build whose
+devices agree gets no case at all. `board_name` returns the device's first
+device-tree compatible, so a per-device section is only as precise as that
+string: two devices that share a compatible would be indistinguishable at
+boot, and a section written for just one of them would silently never apply.
 
 - `BUILD_BY`: appends `built by <name>` to the firmware version — attributing the build, not OpenWrt itself. On first boot it rewrites two files, because two readers are live: `OPENWRT_RELEASE` in `/usr/lib/os-release`, which procd reports through `ubus call system board` and LuCI renders; and `DISTRIB_DESCRIPTION` in `/etc/openwrt_release`, which `luci-lua-runtime` `dofile()`s at runtime (passwall2 pulls it in via `luci-compat`). Patch `/usr/lib/os-release`, never the `/etc/os-release` symlink
 - `WIFI_SSID` / `WIFI_KEY`: default wireless when both are set (skipped on devices without wireless)
-- `WIFI_SSID_5G`: optional, empty by default. One SSID on both bands lets clients roam between them on their own, which is what you usually want; set this only to split the bands (e.g. `Rilakkuma_5G`) when you want to pin a client to 5 GHz by hand. Needs `WIFI_COUNTRY`
+- `WIFI_SSID_5G`: optional, empty by default. One SSID on both bands lets clients roam between them on their own, which is what you usually want; set this only to split the bands when you want to pin a client to 5 GHz by hand. Needs `WIFI_COUNTRY`, and the build fails if it is missing
 - `WIFI_COUNTRY`: required for 5 GHz defaults; empty = 2.4 GHz only
 - `WIFI_ENCRYPTION`: `psk2` / `sae` / `sae-mixed` (default)
+- `LAN_IP`: default LAN address. Unset — the default — generates no script and leaves OpenWrt's `192.168.1.1`. The DHCP pool follows the address on its own
 - Values must not contain single quotes, backslashes, slashes, `#` or `|`
+
+**Editing this file does not trigger a scheduled build.** Change detection
+fingerprints the source and package repos only, so after changing a value run
+the pipeline by hand once.
 
 ## Trigger & artifacts
 

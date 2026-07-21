@@ -93,4 +93,60 @@ touch "$tmp/firmware/config/x87.config"
 # ...and it must fail even when building an unrelated build, since the orphan is still orphaned
 ( BUILDS=jdcloud main >/dev/null 2>&1 ) && { echo "FAIL: orphan overlay must fail regardless of the build filter"; exit 1; }
 rm -f "$tmp/firmware/config/x87.config"
+
+# ---- every named section in settings.ini must match a build name or device id ----
+# One that matches nothing is a typo, and a typo's only symptom is that the
+# whole section quietly stops applying.
+recs=$(builds_load "$tmp/firmware/builds.ini")
+scan_names "$recs"
+[ "$BUILD_NAMES" = '|x86|jdcloud|' ] || { echo "FAIL: BUILD_NAMES (got=$BUILD_NAMES)"; exit 1; }
+[ "$ALL_NAMES" = '|x86|jdcloud|jdcloud_re-ss-01|' ] || { echo "FAIL: ALL_NAMES must add device ids (got=$ALL_NAMES)"; exit 1; }
+
+printf '%s\n' '[settings]' 'WIFI_SSID = R' '' '[jdcloud_re-ss-01]' 'LAN_IP = 192.168.6.1' > "$tmp/firmware/settings.ini"
+check_settings "$ALL_NAMES" || { echo "FAIL: a section naming a real device must pass"; exit 1; }
+
+printf '%s\n' '[settings]' 'WIFI_SSID = R' '' '[jdcloud]' 'WIFI_SSID = B' > "$tmp/firmware/settings.ini"
+check_settings "$ALL_NAMES" || { echo "FAIL: a section naming a build must pass"; exit 1; }
+
+# a typoed device id: one character off is still a miss
+printf '%s\n' '[settings]' 'WIFI_SSID = R' '' '[jdcloud_re-ss-1]' 'LAN_IP = 192.168.6.1' > "$tmp/firmware/settings.ini"
+( check_settings "$ALL_NAMES" ) 2>/dev/null && { echo "FAIL: a typoed device section must fail"; exit 1; }
+
+# Same property as check_overlays: every section is checked regardless of which
+# build is running, which is why the name set passed here is always the full
+# ALL_NAMES rather than just the selected build.
+printf '%s\n' '[settings]' 'WIFI_SSID = R' '' '[nope]' 'LAN_IP = 10.0.0.1' > "$tmp/firmware/settings.ini"
+( check_settings "$ALL_NAMES" ) 2>/dev/null && { echo "FAIL: a section matching nothing must fail"; exit 1; }
+
+# a typoed [settings] header is the headline case: it matches no build and no
+# device, so it must die here -- this is the gap the loader deliberately left open
+printf '%s\n' '[setings]' 'WIFI_SSID = R' > "$tmp/firmware/settings.ini"
+( check_settings "$ALL_NAMES" ) 2>/dev/null && { echo "FAIL: a typoed [settings] header must fail"; exit 1; }
+
+# a syntax error must not mask a section-name typo that follows it: ini_load
+# stops at the first bad line, so every section after it goes unreported
+printf '%s\n' '[settings]' 'WIFI_SSID = R' '' 'garbage line here' '' '[setings]' 'WIFI_SSID = B' > "$tmp/firmware/settings.ini"
+( check_settings "$ALL_NAMES" ) 2>/dev/null && { echo "FAIL: a settings.ini syntax error must be fatal, not skipped"; exit 1; }
+
+# a missing settings.ini is not an error: the whole feature is optional
+rm -f "$tmp/firmware/settings.ini"
+check_settings "$ALL_NAMES" || { echo "FAIL: a missing settings.ini must not be fatal"; exit 1; }
+
+# ---- ambiguous names ----
+# a name that is both a build and a device id leaves a same-named settings.ini
+# section with no single meaning
+clash=$(printf '%s\n' 'jdcloud_re-ss-01|x86/64|openwrt/openwrt||' \
+                      'jdcloud|qualcommax/ipq60xx|openwrt/openwrt||jdcloud_re-ss-01')
+( scan_names "$clash" ) 2>/dev/null && { echo "FAIL: a name that is both a build and a device must fail"; exit 1; }
+
+# a build named 'settings' would collide with settings.ini's global section
+named=$(printf '%s\n' 'settings|x86/64|openwrt/openwrt||')
+( scan_names "$named" ) 2>/dev/null && { echo "FAIL: a build named [settings] must fail"; exit 1; }
+
+# the same device in two builds is legal, not ambiguous: a section named after
+# it applies to both
+dup=$(printf '%s\n' 'a|x86/64|openwrt/openwrt||dev_one' 'b|x86/64|openwrt/openwrt||dev_one')
+scan_names "$dup" || { echo "FAIL: the same device in two builds must be allowed"; exit 1; }
+[ "$ALL_NAMES" = '|a|b|dev_one|' ] || { echo "FAIL: a repeated device must be listed once (got=$ALL_NAMES)"; exit 1; }
+
 echo "PASS: test-make-matrix"
