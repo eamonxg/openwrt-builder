@@ -14,6 +14,7 @@ vals=$(settings_load "$conf")
 get() { printf '%s\n' "$vals" | sed -n "s/^$1|//p" | head -n 1; }
 BUILD_BY=$(get BUILD_BY)
 WIFI_SSID=$(get WIFI_SSID)
+WIFI_SSID_5G=$(get WIFI_SSID_5G)
 WIFI_KEY=$(get WIFI_KEY)
 WIFI_COUNTRY=$(get WIFI_COUNTRY)
 WIFI_ENCRYPTION=$(get WIFI_ENCRYPTION)
@@ -24,7 +25,12 @@ if [ -n "$BUILD_BY" ]; then
   mkdir -p "$out"
   cat > "$out/90-branding" <<EOF
 #!/bin/sh
-# append the builder tag to the firmware description shown in LuCI
+# Append the builder tag to the firmware version LuCI shows. That string is
+# ubus 'system board' -> release.description, which procd reads from
+# OPENWRT_RELEASE in /usr/lib/os-release -- so that is the file to patch.
+# /etc/os-release is only a symlink to it, and /etc/openwrt_release is the
+# legacy copy nothing in LuCI reads; patch it too so the two stay in step.
+sed -i 's/^OPENWRT_RELEASE="\\(.*\\)"/OPENWRT_RELEASE="\\1 by ${BUILD_BY}"/' /usr/lib/os-release
 sed -i "s/^DISTRIB_DESCRIPTION='\\(.*\\)'/DISTRIB_DESCRIPTION='\\1 by ${BUILD_BY}'/" /etc/openwrt_release
 exit 0
 EOF
@@ -42,6 +48,12 @@ if [ -n "$WIFI_SSID" ] && [ -n "$WIFI_KEY" ]; then
 board_config_update
 ucidef_set_wireless 'all' '${WIFI_SSID}' '${WIFI_ENCRYPTION}' '${WIFI_KEY}'
 EOF
+  # A per-band entry replaces the 'all' entry wholesale for that band, and
+  # wifi-scripts ignores one that carries no ssid -- so repeat encryption+key.
+  if [ -n "$WIFI_SSID_5G" ]; then
+    printf "ucidef_set_wireless '5g' '%s' '%s' '%s'\n" \
+      "$WIFI_SSID_5G" "$WIFI_ENCRYPTION" "$WIFI_KEY" >> "$out/05-wifi-defaults"
+  fi
   if [ -n "$WIFI_COUNTRY" ]; then
     printf "ucidef_set_country '%s'\n" "$WIFI_COUNTRY" >> "$out/05-wifi-defaults"
   fi

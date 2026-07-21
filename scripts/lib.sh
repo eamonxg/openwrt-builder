@@ -86,8 +86,8 @@ settings_load() {
       SEC) [ "$_a" = settings ] || die "settings.ini allows only the [settings] section, got: [$_a]" ;;
       KV)
         case "$_b" in
-          BUILD_BY|WIFI_SSID|WIFI_KEY|WIFI_COUNTRY|WIFI_ENCRYPTION) printf '%s|%s\n' "$_b" "$_c" ;;
-          *) die "unknown key in settings.ini: $_b (allowed: BUILD_BY/WIFI_SSID/WIFI_KEY/WIFI_COUNTRY/WIFI_ENCRYPTION)" ;;
+          BUILD_BY|WIFI_SSID|WIFI_SSID_5G|WIFI_KEY|WIFI_COUNTRY|WIFI_ENCRYPTION) printf '%s|%s\n' "$_b" "$_c" ;;
+          *) die "unknown key in settings.ini: $_b (allowed: BUILD_BY/WIFI_SSID/WIFI_SSID_5G/WIFI_KEY/WIFI_COUNTRY/WIFI_ENCRYPTION)" ;;
         esac
         ;;
     esac

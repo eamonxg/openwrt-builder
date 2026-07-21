@@ -9,6 +9,16 @@ printf '%s\n' '[settings]' 'BUILD_BY = eamonxg' 'WIFI_SSID = Rilakkuma' \
 mkdir -p "$tmp/files"
 sh "$sc" "$tmp/s.ini" "$tmp/files"
 grep -q "by eamonxg" "$tmp/files/etc/uci-defaults/90-branding" || { echo "FAIL: branding"; exit 1; }
+# LuCI reads OPENWRT_RELEASE from /usr/lib/os-release; patching only the legacy
+# /etc/openwrt_release left the version string in LuCI unbranded.
+grep -qF '/usr/lib/os-release' "$tmp/files/etc/uci-defaults/90-branding" || { echo "FAIL: os-release not patched"; exit 1; }
+# the generated expression must actually rewrite a real os-release line. Pull the
+# expression out and run it on stdin: 'sed -i' itself is not portable to BSD sed.
+sed_expr=$(sed -n "s|^sed -i '\(.*\)' /usr/lib/os-release\$|\1|p" "$tmp/files/etc/uci-defaults/90-branding")
+[ -n "$sed_expr" ] || { echo "FAIL: no os-release sed expression found"; exit 1; }
+got=$(printf '%s\n' 'OPENWRT_RELEASE="OpenWrt SNAPSHOT r0-672400f"' | sed "$sed_expr")
+[ "$got" = 'OPENWRT_RELEASE="OpenWrt SNAPSHOT r0-672400f by eamonxg"' ] || {
+  echo "FAIL: os-release sed did not append the builder tag, got: $got"; exit 1; }
 grep -qF "ucidef_set_wireless 'all' 'Rilakkuma' 'sae-mixed' 'Rilakkuma'" "$tmp/files/etc/board.d/05-wifi-defaults" || { echo "FAIL: ucidef_set_wireless missing (default sae-mixed)"; exit 1; }
 grep -qF "ucidef_set_country 'CN'" "$tmp/files/etc/board.d/05-wifi-defaults" || { echo "FAIL: WIFI_COUNTRY set, ucidef_set_country expected"; exit 1; }
 sh -n "$tmp/files/etc/uci-defaults/90-branding" || { echo "FAIL: 90-branding syntax error"; exit 1; }
@@ -27,6 +37,19 @@ mkdir -p "$tmp/files4"
 sh "$sc" "$tmp/enc.ini" "$tmp/files4"
 grep -qF "ucidef_set_wireless 'all' 'Rilakkuma' 'psk2' 'Rilakkuma'" "$tmp/files4/etc/board.d/05-wifi-defaults" || { echo "FAIL: explicit WIFI_ENCRYPTION=psk2 not applied"; exit 1; }
 sh -n "$tmp/files4/etc/board.d/05-wifi-defaults" || { echo "FAIL: 05-wifi-defaults (psk2) syntax error"; exit 1; }
+
+# WIFI_SSID_5G splits the bands: 'all' stays for 2.4 GHz, '5g' overrides 5 GHz.
+# The 5g entry must repeat encryption+key -- it replaces 'all' wholesale there.
+printf '%s\n' '[settings]' 'WIFI_SSID = Rilakkuma' 'WIFI_SSID_5G = Rilakkuma_5G' \
+  'WIFI_KEY = Rilakkuma' 'WIFI_COUNTRY = CN' > "$tmp/split.ini"
+mkdir -p "$tmp/files5"
+sh "$sc" "$tmp/split.ini" "$tmp/files5"
+grep -qF "ucidef_set_wireless 'all' 'Rilakkuma' 'sae-mixed' 'Rilakkuma'" "$tmp/files5/etc/board.d/05-wifi-defaults" || { echo "FAIL: 'all' entry missing when 5G split"; exit 1; }
+grep -qF "ucidef_set_wireless '5g' 'Rilakkuma_5G' 'sae-mixed' 'Rilakkuma'" "$tmp/files5/etc/board.d/05-wifi-defaults" || { echo "FAIL: '5g' entry missing"; exit 1; }
+sh -n "$tmp/files5/etc/board.d/05-wifi-defaults" || { echo "FAIL: 05-wifi-defaults (5G split) syntax error"; exit 1; }
+
+# unset WIFI_SSID_5G emits no per-band entry (one SSID on both bands is the default)
+grep -q "ucidef_set_wireless '5g'" "$tmp/files/etc/board.d/05-wifi-defaults" && { echo "FAIL: no WIFI_SSID_5G, no 5g entry expected"; exit 1; }
 
 # empty settings generate nothing
 printf '%s\n' '[settings]' 'BUILD_BY =' 'WIFI_SSID =' > "$tmp/empty.ini"

@@ -303,6 +303,7 @@ lookup() { # $1 placeholder name -> value ('' means: drop the line)
     source)          printf "%s@\`%s\` (%s)" "${SOURCE_REPO:-}" "$short" "${SOURCE_REF:-}" ;;
     changes)         printf '%s' "$changes" ;;
     wifi_ssid)       get WIFI_SSID ;;
+    wifi_ssid_5g)    get WIFI_SSID_5G ;;
     wifi_key)        get WIFI_KEY ;;
     wifi_country)    get WIFI_COUNTRY ;;
     wifi_encryption) printf '%s' "$wifi_encryption" ;;

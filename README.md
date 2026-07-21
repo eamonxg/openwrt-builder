@@ -137,16 +137,17 @@ Every scope is guarded: a `=y`/`=m` line dropped by `defconfig`, a per-device li
 | `{{changes}}` | compare link against the previous release, empty when there is none |
 | `{{kernel}}` `{{date}}` | from the finished build |
 | `{{packages}}` | the versions table, discovered — see below |
-| `{{wifi_ssid}}` `{{wifi_key}}` `{{wifi_country}}` `{{wifi_encryption}}` `{{build_by}}` | from `settings.ini` |
+| `{{wifi_ssid}}` `{{wifi_ssid_5g}}` `{{wifi_key}}` `{{wifi_country}}` `{{wifi_encryption}}` `{{build_by}}` | from `settings.ini` |
 
 `{{packages}}` needs no list: it reads the Makefiles of the repos `packages.ini` cloned, and prints a row for each of their packages the firmware actually contains. So a package that a build did not enable, or a `mihomo` variant that does not exist, simply has no row — and adding a plugin never means remembering to update a table. Rows are grouped by source repo, in directory order.
 
 ## Personalization (settings.ini)
 
-Five keys in the `[settings]` section; empty or removed = disabled; a typoed key fails the build early:
+Six keys in the `[settings]` section; empty or removed = disabled; a typoed key fails the build early:
 
-- `BUILD_BY`: appends `by <name>` to the firmware description shown in LuCI
+- `BUILD_BY`: appends `by <name>` to the firmware version LuCI shows. It rewrites `OPENWRT_RELEASE` in `/usr/lib/os-release` on first boot, because that — not the legacy `/etc/openwrt_release` — is what `ubus call system board` reports and LuCI renders
 - `WIFI_SSID` / `WIFI_KEY`: default wireless when both are set (skipped on devices without wireless)
+- `WIFI_SSID_5G`: optional, empty by default. One SSID on both bands lets clients roam between them on their own, which is what you usually want; set this only to split the bands (e.g. `Rilakkuma_5G`) when you want to pin a client to 5 GHz by hand. Needs `WIFI_COUNTRY`
 - `WIFI_COUNTRY`: required for 5 GHz defaults; empty = 2.4 GHz only
 - `WIFI_ENCRYPTION`: `psk2` / `sae` / `sae-mixed` (default)
 - Values must not contain single quotes, backslashes, slashes, `#` or `|`
