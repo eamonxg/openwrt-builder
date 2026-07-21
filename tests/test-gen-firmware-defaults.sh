@@ -8,16 +8,20 @@ printf '%s\n' '[settings]' 'BUILD_BY = eamonxg' 'WIFI_SSID = Rilakkuma' \
   'WIFI_KEY = Rilakkuma' 'WIFI_COUNTRY = CN' > "$tmp/s.ini"
 mkdir -p "$tmp/files"
 sh "$sc" "$tmp/s.ini" "$tmp/files"
-grep -q "by eamonxg" "$tmp/files/etc/uci-defaults/90-branding" || { echo "FAIL: branding"; exit 1; }
+grep -q "built by eamonxg" "$tmp/files/etc/uci-defaults/90-branding" || { echo "FAIL: branding"; exit 1; }
 # LuCI reads OPENWRT_RELEASE from /usr/lib/os-release; patching only the legacy
 # /etc/openwrt_release left the version string in LuCI unbranded.
 grep -qF '/usr/lib/os-release' "$tmp/files/etc/uci-defaults/90-branding" || { echo "FAIL: os-release not patched"; exit 1; }
+# ...and /etc/openwrt_release is NOT dead weight: luci-lua-runtime dofile()s it
+# at runtime for luci.version, and passwall2 pulls that runtime in via
+# luci-compat. Both files or the two version strings disagree.
+grep -qF '/etc/openwrt_release' "$tmp/files/etc/uci-defaults/90-branding" || { echo "FAIL: openwrt_release not patched"; exit 1; }
 # the generated expression must actually rewrite a real os-release line. Pull the
 # expression out and run it on stdin: 'sed -i' itself is not portable to BSD sed.
 sed_expr=$(sed -n "s|^sed -i '\(.*\)' /usr/lib/os-release\$|\1|p" "$tmp/files/etc/uci-defaults/90-branding")
 [ -n "$sed_expr" ] || { echo "FAIL: no os-release sed expression found"; exit 1; }
 got=$(printf '%s\n' 'OPENWRT_RELEASE="OpenWrt SNAPSHOT r0-672400f"' | sed "$sed_expr")
-[ "$got" = 'OPENWRT_RELEASE="OpenWrt SNAPSHOT r0-672400f by eamonxg"' ] || {
+[ "$got" = 'OPENWRT_RELEASE="OpenWrt SNAPSHOT r0-672400f built by eamonxg"' ] || {
   echo "FAIL: os-release sed did not append the builder tag, got: $got"; exit 1; }
 grep -qF "ucidef_set_wireless 'all' 'Rilakkuma' 'sae-mixed' 'Rilakkuma'" "$tmp/files/etc/board.d/05-wifi-defaults" || { echo "FAIL: ucidef_set_wireless missing (default sae-mixed)"; exit 1; }
 grep -qF "ucidef_set_country 'CN'" "$tmp/files/etc/board.d/05-wifi-defaults" || { echo "FAIL: WIFI_COUNTRY set, ucidef_set_country expected"; exit 1; }

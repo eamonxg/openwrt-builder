@@ -145,7 +145,7 @@ Every scope is guarded: a `=y`/`=m` line dropped by `defconfig`, a per-device li
 
 Six keys in the `[settings]` section; empty or removed = disabled; a typoed key fails the build early:
 
-- `BUILD_BY`: appends `by <name>` to the firmware version LuCI shows. It rewrites `OPENWRT_RELEASE` in `/usr/lib/os-release` on first boot, because that — not the legacy `/etc/openwrt_release` — is what `ubus call system board` reports and LuCI renders
+- `BUILD_BY`: appends `built by <name>` to the firmware version — attributing the build, not OpenWrt itself. On first boot it rewrites two files, because two readers are live: `OPENWRT_RELEASE` in `/usr/lib/os-release`, which procd reports through `ubus call system board` and LuCI renders; and `DISTRIB_DESCRIPTION` in `/etc/openwrt_release`, which `luci-lua-runtime` `dofile()`s at runtime (passwall2 pulls it in via `luci-compat`). Patch `/usr/lib/os-release`, never the `/etc/os-release` symlink
 - `WIFI_SSID` / `WIFI_KEY`: default wireless when both are set (skipped on devices without wireless)
 - `WIFI_SSID_5G`: optional, empty by default. One SSID on both bands lets clients roam between them on their own, which is what you usually want; set this only to split the bands (e.g. `Rilakkuma_5G`) when you want to pin a client to 5 GHz by hand. Needs `WIFI_COUNTRY`
 - `WIFI_COUNTRY`: required for 5 GHz defaults; empty = 2.4 GHz only

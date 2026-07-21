@@ -25,13 +25,20 @@ if [ -n "$BUILD_BY" ]; then
   mkdir -p "$out"
   cat > "$out/90-branding" <<EOF
 #!/bin/sh
-# Append the builder tag to the firmware version LuCI shows. That string is
-# ubus 'system board' -> release.description, which procd reads from
-# OPENWRT_RELEASE in /usr/lib/os-release -- so that is the file to patch.
-# /etc/os-release is only a symlink to it, and /etc/openwrt_release is the
-# legacy copy nothing in LuCI reads; patch it too so the two stay in step.
-sed -i 's/^OPENWRT_RELEASE="\\(.*\\)"/OPENWRT_RELEASE="\\1 by ${BUILD_BY}"/' /usr/lib/os-release
-sed -i "s/^DISTRIB_DESCRIPTION='\\(.*\\)'/DISTRIB_DESCRIPTION='\\1 by ${BUILD_BY}'/" /etc/openwrt_release
+# Append the builder tag to the firmware version. Two files, two readers, both
+# live -- neither line is redundant:
+#   /usr/lib/os-release   OPENWRT_RELEASE -> procd -> ubus 'system board' ->
+#     release.description, the version line LuCI renders. Patch this path, not
+#     /etc/os-release: that is a symlink here (upstream commits it as mode
+#     120000), and 'sed -i' would replace the link with a regular file, leaving
+#     the file procd actually opens untouched.
+#   /etc/openwrt_release  DISTRIB_DESCRIPTION -> luci-lua-runtime's luci.version,
+#     which dofile()s this file at runtime -- its contents happen to be valid
+#     Lua. passwall2 depends on luci-compat, which pulls that runtime in, so the
+#     path is live in these builds; drop this line and the two disagree.
+# 'built by', not 'by': what we did is build it, OpenWrt itself is not ours.
+sed -i 's/^OPENWRT_RELEASE="\\(.*\\)"/OPENWRT_RELEASE="\\1 built by ${BUILD_BY}"/' /usr/lib/os-release
+sed -i "s/^DISTRIB_DESCRIPTION='\\(.*\\)'/DISTRIB_DESCRIPTION='\\1 built by ${BUILD_BY}'/" /etc/openwrt_release
 exit 0
 EOF
   echo "generated 90-branding (by ${BUILD_BY})"
