@@ -13,8 +13,7 @@ firmware/                  # you describe the firmware here; everything else bui
 ├── config/                # ★ what each build ticks in menuconfig terms
 │   ├── common.config      #   every build
 │   ├── x86.config         #   only x86
-│   ├── tr3000.config      #   only tr3000
-│   └── jdcloud_nss.config #   only jdcloud_nss
+│   └── tr3000.config      #   only tr3000
 └── uci-defaults/          # first-boot scripts
 scripts/ tests/ .github/   # the machine: build scripts, unit tests, workflows
 ```
