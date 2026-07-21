@@ -72,17 +72,11 @@ jobs:
           git init openwrt
           cd openwrt
           git remote add origin "https://github.com/${SOURCE_REPO}.git"
-          git fetch --depth=1 origin "$SOURCE_SHA"
+          # One commit is enough: the toolchain cache key is built from tree
+          # hashes (`git rev-parse HEAD:tools`), which need no history.
+          git fetch --depth=1 --no-tags origin "$SOURCE_SHA"
           git checkout -q FETCH_HEAD
           echo "source: ${SOURCE_REPO}@${SOURCE_SHA} (${SOURCE_REF})"
-
-      - name: Toolchain & ccache cache
-        if: ${{ !inputs.test_only && !inputs.clean_build }}
-        uses: HiGarfield/cachewrtbuild@main
-        with:
-          ccache: true
-          mixkey: ${{ inputs.source_repo }}-${{ inputs.target }}
-          prefix: ${{ github.workspace }}/openwrt
 
       - name: Feeds
         working-directory: openwrt
@@ -134,6 +128,73 @@ jobs:
           # .config is hidden and v4 skips hidden files by default; a missing file must fail, not silently succeed
           include-hidden-files: true
           if-no-files-found: error
+
+      # The toolchain is a pure function of its sources and the options that
+      # configure it, so the key is built from exactly those two things and
+      # nothing else — not the upstream HEAD, not the repo name. Tree hashes are
+      # content-addressed, so any fork (openwrt, immortalwrt, qosmio, lede…) is
+      # identified by what its toolchain actually contains; two trees that are
+      # byte-identical share a cache, which is correct.
+      # .config is read here rather than earlier because defconfig has to resolve
+      # CONFIG_LINUX_*, CONFIG_LIBC and the gcc/binutils picks first:
+      # toolchain/kernel-headers is part of the toolchain but takes its version
+      # from include/kernel-version.mk, so toolchain/'s tree hash alone would
+      # happily survive a kernel bump that changes what gets built.
+      # Runs on test-only builds too: it is grep plus rev-parse, and it is the one
+      # step here whose inputs are guessed rather than known, so a five-minute
+      # config run should be able to prove the key describes the toolchain.
+      - name: Toolchain cache key
+        id: tckey
+        if: ${{ !inputs.clean_build }}
+        run: |
+          set -euo pipefail
+          # CONFIG_TARGET_DEVICE_* is deliberately not matched: adding a device to
+          # a build must not throw away its toolchain.
+          CFG=$(grep -E '^CONFIG_(TARGET_(ARCH|BOARD|SUBTARGET)|LIBC=|GCC_|BINUTILS_|LINUX_[0-9])' openwrt/.config | sort) || true
+          if [ -z "$CFG" ]; then
+            echo "::error::no toolchain symbols matched in .config — the key would not describe the toolchain"
+            exit 1
+          fi
+          INPUTS=$(printf '%s\n%s\n' "$(git -C openwrt rev-parse HEAD:tools HEAD:toolchain)" "$CFG")
+          echo "--- toolchain key inputs ---"
+          printf '%s\n' "$INPUTS"
+          echo "hash=$(printf '%s\n' "$INPUTS" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      # Immutable for a given key, and the expensive half: an exact hit means
+      # actions/cache skips the upload entirely, so an unchanged toolchain costs
+      # zero bytes of the repo's 10 GB quota.
+      - name: Toolchain cache
+        id: toolchain
+        if: ${{ !inputs.test_only && !inputs.clean_build }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            openwrt/staging_dir/host*
+            openwrt/staging_dir/tool*
+          key: toolchain-${{ inputs.build }}-${{ steps.tckey.outputs.hash }}
+
+      # The other half is an accumulating blob that wants rolling updates, which
+      # is why it is a separate entry: sharing one key with the toolchain would
+      # force a choice between "never re-upload" and "keep it fresh".
+      - name: ccache
+        if: ${{ !inputs.test_only && !inputs.clean_build }}
+        uses: actions/cache@v4
+        with:
+          path: openwrt/.ccache
+          key: ccache-${{ inputs.build }}-${{ github.run_id }}
+          restore-keys: ccache-${{ inputs.build }}-
+
+      - name: Skip toolchain build (cache hit)
+        if: ${{ steps.toolchain.outputs.cache-hit == 'true' }}
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+          # drop the toolchain stamps from the top-level dependency lines so make
+          # accepts the restored staging_dir instead of rebuilding into it.
+          # shellcheck disable=SC2016  # $(tools/stamp-compile) is literal Makefile text, not a subshell
+          sed -i 's/ $(tool.*\/stamp-compile)//; s/ $(tool.*\/stamp-install)//' Makefile
+          # printed so a silently-ineffective sed shows up as an unpatched line
+          grep -nE '^(prepare|world):' Makefile
 
       - name: Reproducible build env (clean build)
         if: ${{ inputs.clean_build && !inputs.test_only }}
