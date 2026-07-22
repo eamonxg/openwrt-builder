@@ -171,7 +171,11 @@ jobs:
             echo "::error::no toolchain symbols matched in .config — the key would not describe the toolchain"
             exit 1
           fi
-          INPUTS=$(printf '%s\n%s\n' "$(git -C openwrt rev-parse HEAD:tools HEAD:toolchain)" "$CFG")
+          # the Go host compiler lives in staging_dir/hostpkg, inside this cache,
+          # but is packaged by the feed — so its subtree is an input too. Without
+          # it a golang bump would be masked by the stamp-freshening below.
+          GO=$(git -C openwrt/feeds/packages rev-parse HEAD:lang/golang)
+          INPUTS=$(printf '%s\n%s\n%s\n' "$(git -C openwrt rev-parse HEAD:tools HEAD:toolchain)" "$GO" "$CFG")
           echo "--- toolchain key inputs ---"
           printf '%s\n' "$INPUTS"
           echo "hash=$(printf '%s\n' "$INPUTS" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
@@ -211,6 +215,14 @@ jobs:
           sed -i 's/ $(tool.*\/stamp-compile)//; s/ $(tool.*\/stamp-install)//' Makefile
           # printed so a silently-ineffective sed shows up as an unpatched line
           grep -nE '^(prepare|world):' Makefile
+          # The cache also carries feed-built host tools — above all the Go
+          # compiler (~30 min per run). Their stamps are older than this fresh
+          # checkout, which make reads as stale and rebuilds. Touch them newer:
+          # what the cache holds is current for this key, since the golang feed
+          # subtree is one of the key's inputs. Stamps only exist for artifacts
+          # the cache really contains, so a thin cache degrades to a rebuild,
+          # never to a missing tool.
+          find staging_dir -path '*/stamp/*' -type f -not -path '*target*' -exec touch {} +
 
       - name: Reproducible build env (clean build)
         if: ${{ inputs.clean_build && !inputs.test_only }}
