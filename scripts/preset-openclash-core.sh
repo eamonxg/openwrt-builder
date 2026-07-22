@@ -1,6 +1,9 @@
 #!/bin/sh
 # preset-openclash-core.sh <openwrt-dir> — when this build enables OpenClash,
 # fetch its meta core into the cloned package so it ships inside the ipk.
+# A preset hook: build.yml runs every scripts/preset-*.sh for every build after
+# defconfig, so a hook must decide from .config whether it applies and exit 0
+# when it does not. Adding a plugin's build-time step = adding one such script.
 # OpenClash carries no core and the file is ~20 MB; a shared files/ overlay
 # would land it on every device of the build, whereas bound to the package it
 # reaches only the devices that actually install openclash.
