@@ -130,21 +130,6 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-      # Every scripts/preset-*.sh runs here, once the config is final and before
-      # anything is downloaded or compiled. A hook reads .config and exits 0 on
-      # builds that do not concern it, so this step needs no per-build knowledge
-      # and a future plugin that wants build-time preparation adds one script —
-      # this file stays untouched. Today: preset-openclash-core.sh fetches the
-      # OpenClash meta core into the cloned package, so it rides inside the ipk
-      # to exactly the devices that install openclash, not the shared files/.
-      - name: Preset hooks
-        if: ${{ !inputs.test_only }}
-        run: |
-          for h in builder/scripts/preset-*.sh; do
-            [ -e "$h" ] || continue   # unmatched glob: no hooks yet
-            bash "$h" openwrt
-          done
-
       # The toolchain is a pure function of its sources and the options that
       # configure it, so the key is built from exactly those two things and
       # nothing else — not the upstream HEAD, not the repo name. Tree hashes are
