@@ -206,15 +206,26 @@ mkdir -p "$tmp/f_lan"
 sh "$sc" "$tmp/lanips.ini" "$tmp/f_lan" jdcloud jdcloud_re-cs-02 jdcloud_re-ss-01
 nw="$tmp/f_lan/etc/uci-defaults/95-network"
 syntax_ok "$nw"
-run_generated "$nw" 'jdcloud,re-cs-02' | grep -qx "uci set network.lan.ipaddr=192.168.8.1" || { echo "FAIL: athena LAN address"; exit 1; }
-run_generated "$nw" 'jdcloud,re-ss-01' | grep -qx "uci set network.lan.ipaddr=192.168.6.1" || { echo "FAIL: arthur LAN address"; exit 1; }
-run_generated "$nw" 'jdcloud,re-ss-01' | grep -qx "uci commit network" || { echo "FAIL: uci commit missing"; exit 1; }
+# config_generate writes the address as a CIDR list ('list ipaddr
+# 192.168.1.1/24', upstream d989d9a8e); a bare 'uci set' collapses that list
+# into a prefixless option, and netifd installs a prefixless IPv4 as /32
+# (proto.c: netmask defaults to 32) -- no on-link subnet, no DHCP pool, the
+# box unreachable on wire and wireless. The address must be replaced as a
+# list carrying its own prefix: delete first, then add_list.
+log=$(run_generated "$nw" 'jdcloud,re-ss-01')
+echo "$log" | grep -q "uci set network.lan.ipaddr" && {
+  echo "FAIL: bare 'uci set' drops the CIDR prefix and netifd falls back to /32 (got: $log)"; exit 1; }
+[ "$(printf '%s\n' "$log" | grep -m1 'network\.lan\.ipaddr')" = "uci -q delete network.lan.ipaddr" ] || {
+  echo "FAIL: the old address list must be deleted before the new one is added (got: $log)"; exit 1; }
+echo "$log" | grep -qx "uci add_list network.lan.ipaddr=192.168.6.1/24" || { echo "FAIL: arthur LAN address (got: $log)"; exit 1; }
+echo "$log" | grep -qx "uci commit network" || { echo "FAIL: uci commit missing"; exit 1; }
+run_generated "$nw" 'jdcloud,re-cs-02' | grep -qx "uci add_list network.lan.ipaddr=192.168.8.1/24" || { echo "FAIL: athena LAN address"; exit 1; }
 
 # an unconfigured board does nothing rather than inheriting some other box's
 # address. The build-level value is empty, so this guard is genuinely needed --
 # the opposite of the tr3000 case where everything is known at build time.
 log=$(run_generated "$nw" 'someone,else')
-echo "$log" | grep -q "uci set" && { echo "FAIL: an unconfigured board must not touch the LAN address (got: $log)"; exit 1; }
+echo "$log" | grep -q '^uci ' && { echo "FAIL: an unconfigured board must not touch the LAN address (got: $log)"; exit 1; }
 
 # uci-defaults run as 'sh $f && rm -f $f': a non-zero exit leaves the file in
 # place and it runs again on every boot
@@ -231,7 +242,7 @@ nw="$tmp/f_lanb/etc/uci-defaults/95-network"
 syntax_ok "$nw"
 grep -q '^case ' "$nw" && { echo "FAIL: build-scope LAN_IP needs no case"; exit 1; }
 grep -q '\[ -n ' "$nw" && { echo "FAIL: LAN_IP is set on every board, no guard expected"; exit 1; }
-grep -qx "uci set network.lan.ipaddr='10.0.0.1'" "$nw" || { echo "FAIL: build-scope LAN address must be inlined"; exit 1; }
+grep -qx "uci add_list network.lan.ipaddr='10.0.0.1'/24" "$nw" || { echo "FAIL: build-scope LAN address must be inlined"; exit 1; }
 
 # ---- exactly one key varies in emptiness: only THAT key may get a runtime
 # ---- test; WIFI_KEY is non-empty on every board here, and must never be

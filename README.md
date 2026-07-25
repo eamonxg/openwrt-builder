@@ -182,7 +182,7 @@ boot, and a section written for just one of them would silently never apply.
 - `WIFI_SSID_5G`: optional, empty by default. One SSID on both bands lets clients roam between them on their own, which is what you usually want; set this only to split the bands when you want to pin a client to 5 GHz by hand. Needs `WIFI_COUNTRY`, and the build fails if it is missing
 - `WIFI_COUNTRY`: required for 5 GHz defaults; empty = 2.4 GHz only
 - `WIFI_ENCRYPTION`: `psk2` / `sae` / `sae-mixed` (default)
-- `LAN_IP`: default LAN address. Unset — the default — generates no script and leaves OpenWrt's `192.168.1.1`. The DHCP pool follows the address on its own
+- `LAN_IP`: default LAN address, applied as `<ip>/24`. Unset — the default — generates no script and leaves OpenWrt's `192.168.1.1`. The DHCP pool follows the address on its own
 - Values must not contain single quotes, backslashes, slashes, `#` or `|`
 
 **Editing this file does not trigger a scheduled build.** Change detection

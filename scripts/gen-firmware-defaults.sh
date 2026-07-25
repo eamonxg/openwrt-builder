@@ -198,11 +198,18 @@ if ! none_set LAN_IP; then
 # it does not have to interleave with each target's own 02_network, so it stays
 # target-independent. The DHCP pool needs no attention -- dnsmasq's start and
 # limit are relative to the network address, so the range follows on its own.
+# config_generate writes the address as a CIDR list -- 'list ipaddr
+# 192.168.1.1/24' -- so a bare 'uci set' would collapse it into a prefixless
+# option, which netifd installs as /32: no on-link subnet, no DHCP pool, the
+# box dark on wire and wireless. The list is replaced wholesale instead,
+# prefix included (/24 is a constant of these builds, not a setting), and
+# delete-then-add also heals a board that already committed the bare address.
 EOF
     if any_varies LAN_IP; then printf '. /lib/functions.sh\n'; fi
     emit_vars LAN_IP
     if ! all_set LAN_IP; then printf '[ -n %s ] || exit 0\n' "$(ref LAN_IP)"; fi
-    printf 'uci set network.lan.ipaddr=%s\n' "$(ref LAN_IP)"
+    printf 'uci -q delete network.lan.ipaddr\n'
+    printf 'uci add_list network.lan.ipaddr=%s/24\n' "$(ref LAN_IP)"
     printf 'uci commit network\nexit 0\n'
   } > "$out/95-network"
   generated="$generated $out/95-network"
