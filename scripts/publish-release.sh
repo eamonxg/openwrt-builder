@@ -62,7 +62,9 @@ if [ -n "${PKG_REPOS:-}" ] && [ -n "$PREV_PKG_REPOS" ] && [ -f "$pkgini" ]; then
   for entry in $PKG_REPOS; do
     name=${entry%@*}; sha=${entry##*@}
     prev=$(printf '%s' "$PREV_PKG_REPOS" | tr ' ' '\n' | sed -n "s/^${name}@//p" | head -n 1)
-    [ -n "$prev" ] && [ "$prev" != "$sha" ] || continue
+    # nothing to diff against on a repo's first sighting, and nothing to say
+    # when it has not moved
+    if [ -z "$prev" ] || [ "$prev" = "$sha" ]; then continue; fi
     url=$(printf '%s\n' "$urls" | sed -n "s/^${name}|//p" | head -n 1)
     url=${url%%|*}
     case "$url" in
