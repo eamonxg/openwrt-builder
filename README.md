@@ -109,41 +109,51 @@ Every scope is guarded: a `=y`/`=m` line dropped by `defconfig`, a per-device li
 
 - Dependencies outside the official tree: add their repo as another section (repo only, nothing to enable)
 - Packages already in the official tree need no `packages.ini` section at all — just enable them in `common.config` or an overlay
-- The release "Bundled packages" table and the Chinese language pack both follow what actually shipped — neither needs maintenance
+- The release "Packages" table and the Chinese language pack both follow what actually shipped — neither needs maintenance
 
 ## Release page (release.md)
 
 `release.md` is the release body, and every value in it comes from the pipeline — you edit layout and wording, never data:
 
 ```markdown
-## {{build}} · kernel {{kernel}}
+- **Target** `{{target}}`
+- **Kernel** {{kernel}}
+- **Source** {{source}}
 
-| **Target** | {{target}} |
-| **Source** | {{source}} |
+{{upstream}}
 
-### Bundled packages
-| Package | Version |
-|---|---|
+{{images}}
+
+### Defaults
+
+- LAN address `{{lan_ip}}`
+- Wi-Fi `{{wifi_ssid}}` / password `{{wifi_key}}` (encryption {{wifi_encryption}})
+
 {{packages}}
 
-- Default Wi-Fi: SSID `{{wifi_ssid}}` / password `{{wifi_key}}` (encryption {{wifi_encryption}})
-- Build tag: by {{build_by}}
+{{plugin_changes}}
 ```
 
-**One rule covers every conditional: a line whose placeholder resolves to empty is dropped whole.** No Wi-Fi configured, no `BUILD_BY`, no `LAN_IP`, no previous release to compare against — each simply loses its line. A placeholder that is not recognised is fatal, so a typo cannot quietly blank a row.
+**One rule covers every conditional: a line whose placeholder resolves to empty is dropped whole.** No Wi-Fi configured, no 5 GHz SSID, no previous release to compare against — each simply loses its line. A placeholder that is not recognised is fatal, so a typo cannot quietly blank a row.
 
 | Placeholder | Value |
 |---|---|
-| `{{build}}` `{{target}}` | from that build's section in `builds.ini` |
+| `{{target}}` | from that build's section in `builds.ini` |
 | `{{source}}` | `owner/repo@sha (ref)`, with the SHA the plan stage pinned |
-| `{{changes}}` | compare link against the previous release, empty when there is none |
-| `{{kernel}}` `{{built_at}}` | from the finished build |
+| `{{kernel}}` | from the finished build |
+| `{{upstream}}` | upstream commit subjects since the previous release, folded; empty when there is none |
 | `{{images}}` | the flashing table, discovered from the upload dir — see below |
 | `{{packages}}` | the versions table, discovered — see below |
-| `{{package_repos}}` | the third-party plugin repos table, with a compare link per one that changed |
-| `{{wifi_ssid}}` `{{wifi_ssid_5g}}` `{{wifi_key}}` `{{wifi_country}}` `{{wifi_encryption}}` `{{lan_ip}}` `{{build_by}}` | from `settings.ini` |
+| `{{plugin_changes}}` | commit subjects for each third-party repo whose SHA moved since the previous build |
+| `{{wifi_ssid}}` `{{wifi_ssid_5g}}` `{{wifi_key}}` `{{wifi_country}}` `{{wifi_encryption}}` `{{lan_ip}}` | from `settings.ini` |
 
-`{{packages}}` needs no list: it reads the Makefiles of the repos `packages.ini` cloned, and prints a row for each of their packages the firmware actually contains. So a package that a build did not enable, or a `mihomo` variant that does not exist, simply has no row — and adding a plugin never means remembering to update a table. Rows are grouped by source repo, in directory order.
+`{{lan_ip}}` is the one placeholder with a fallback: an unset `LAN_IP` renders OpenWrt's own `192.168.1.1` rather than dropping the line, because the address a freshly flashed box answers at is the one thing a reader cannot infer from silence. The fallback is applied per device *before* the devices are compared, so it can never paper over a genuine disagreement between them.
+
+`{{packages}}` needs no list: it reads the Makefiles of the repos `packages.ini` cloned, and prints a row for each of their packages the firmware actually contains — with a `Source` column naming the repo it came from, marked `↑` when that repo moved since the last build. So a package that a build did not enable, or a `mihomo` variant that does not exist, simply has no row, and adding a plugin never means remembering to update a table. A repo that shipped nothing at all is named in a footnote instead: silence there would read as "not cloned" when it means "cloned, but this build enables none of it".
+
+`{{images}}` is transposed — one row per use, one column per device. `use_of()` keys off the filename suffix, so every device of a build gets the same description for its same-type file; printed per device that is pure repetition, and with three profiles it drowns the table. As a row label it is stated once, and the empty cells then carry information of their own: only the ubootmod profile takes a BL2 or FIP. Artifacts no device claims (the MediaTek DDR blobs) get a sentence naming each one, not a table with a blank column.
+
+`{{upstream}}` and `{{plugin_changes}}` are the only values fetched over the network, and that fetching lives in `publish-release.sh`, never here: `release-notes.sh` renders what it is handed, which is what keeps it testable without a network.
 
 ## Personalization (settings.ini)
 

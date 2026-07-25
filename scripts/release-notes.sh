@@ -3,16 +3,21 @@
 # Fill the release notes template. The template decides the prose; every value
 # comes from the pipeline, so nothing has to be declared twice.
 # Env inputs: BUILD TARGET DEVICES SOURCE_REPO SOURCE_REF SOURCE_SHA PREV_SHA
-#             KERNEL DIGEST [DATE] [PKG_REPOS] [PREV_PKG_REPOS]
+#             KERNEL DIGEST [PKG_REPOS] [PREV_PKG_REPOS]
+#             [UPSTREAM_LOG] [UPSTREAM_TOTAL] [PLUGIN_LOG]
+#
+# The *_LOG inputs are commit subjects fetched by publish-release.sh. Rendering
+# stays here, fetching stays there: this script keeps working offline, so the
+# tests can feed it fixtures instead of a network.
 #
 # {{name}} is replaced by its value. A line holding a placeholder that resolves
 # to empty is dropped whole — that is the only conditional the template needs
 # (no Wi-Fi configured, no previous release, no third-party repos).
 # An unknown placeholder is fatal, so a typo cannot quietly blank a line.
 #
-# {{images}} {{packages}} {{package_repos}} are block placeholders: each owns a
-# whole line and expands to many. A block emits its own '###' heading, so one
-# with nothing to say leaves no dangling heading behind.
+# {{images}} {{packages}} {{upstream}} {{plugin_changes}} are block
+# placeholders: each owns a whole line and expands to many. A block emits its
+# own heading, so one with nothing to say leaves no dangling heading behind.
 set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
@@ -77,7 +82,7 @@ device_ids() {
   printf '%s\n' ${DEVICES:-}
 }
 # two orders, two jobs: $ids drives matching and must be longest-first;
-# $ids_show drives the headings a human reads and stays in natural order.
+# $ids_show drives the columns a human reads and stays in natural order.
 ids=$(device_ids | awk 'NF { print length($0), $0 }' | sort -rn | cut -d' ' -f2- || true)
 ids_show=$(device_ids | awk 'NF' | sort || true)
 
@@ -111,65 +116,167 @@ manifest_of() { # $1 device id -> its manifest path, empty when none
 
 # ----------------------------------------------------------------- images ----
 
-# What each file is for, decided by filename alone. No per-model knowledge lives
+# What a file is for, decided by filename alone. No per-model knowledge lives
 # here: models come and go, these suffixes are how OpenWrt names things.
-# Order matters — an ubootmod initramfs is '...-initramfs-recovery.itb' and the
-# first arm is the one that describes it correctly.
-purpose() {
+# Order matters twice over:
+#   - an ubootmod initramfs is '...-initramfs-recovery.itb', and the initramfs
+#     arm is the one that describes it correctly;
+#   - the rootfs-specific x86 arms must precede the generic ones, or ext4 and
+#     squashfs images collapse into one indistinguishable description — which is
+#     exactly the choice a reader is trying to make.
+use_of() { # $1 basename -> use key, empty when the name says nothing
   case "$1" in
-    *-initramfs-*)         printf 'First install: tftp-boot it from U-Boot; runs in RAM, writes nothing to flash' ;;
-    *-recovery.itb)        printf 'U-Boot recovery image' ;;
-    *preloader.bin)        printf 'Bootloader stage 1, written to the BL2 partition (only when replacing U-Boot)' ;;
-    *bl31-uboot.fip)       printf 'ATF plus U-Boot itself, written to the FIP partition (only when replacing U-Boot)' ;;
-    *-sysupgrade.*)        printf 'Upgrade: flash from a running OpenWrt via LuCI or sysupgrade' ;;
-    *-factory.*)           printf 'Install from the vendor firmware' ;;
-    *-combined-efi.img.gz) printf 'UEFI whole-disk image, dd to the target disk' ;;
-    *-combined.img.gz)     printf 'Legacy BIOS whole-disk image, dd to the target disk' ;;
-    *-efi.iso)             printf 'UEFI bootable install media' ;;
-    *.iso)                 printf 'Legacy BIOS bootable install media' ;;
+    *-initramfs-*)                  printf 'tftp' ;;
+    *-recovery.itb)                 printf 'recovery' ;;
+    *preloader.bin)                 printf 'bl2' ;;
+    *bl31-uboot.fip)                printf 'fip' ;;
+    *-sysupgrade.*)                 printf 'upgrade' ;;
+    *-factory.*)                    printf 'factory' ;;
+    *-ext4-combined-efi.img.gz)     printf 'efi-ext4' ;;
+    *-ext4-combined.img.gz)         printf 'bios-ext4' ;;
+    *-squashfs-combined-efi.img.gz) printf 'efi-squashfs' ;;
+    *-squashfs-combined.img.gz)     printf 'bios-squashfs' ;;
+    *-combined-efi.img.gz)          printf 'efi-disk' ;;
+    *-combined.img.gz)              printf 'bios-disk' ;;
+    *-efi.iso)                      printf 'efi-iso' ;;
+    *.iso)                          printf 'bios-iso' ;;
+    mt[0-9]*-ram-*-bl2.bin)         printf 'ddr' ;;
   esac
+}
+
+use_meta() { # $1 use key -> "label|what to do with it"
+  case "$1" in
+    tftp)          printf 'First install|tftp-boot it from U-Boot; runs in RAM, writes nothing to flash' ;;
+    upgrade)       printf 'Upgrade|flash from a running OpenWrt via LuCI or sysupgrade' ;;
+    factory)       printf 'Factory|install from the vendor firmware' ;;
+    recovery)      printf 'Recovery|U-Boot recovery image' ;;
+    bl2)           printf 'BL2|bootloader stage 1, written to the BL2 partition (only when replacing U-Boot)' ;;
+    fip)           printf 'FIP|ATF plus U-Boot itself, written to the FIP partition (only when replacing U-Boot)' ;;
+    efi-ext4)      printf 'UEFI whole-disk, ext4|writable, resizable rootfs; dd to the target disk' ;;
+    bios-ext4)     printf 'BIOS whole-disk, ext4|writable, resizable rootfs; dd to the target disk' ;;
+    efi-squashfs)  printf 'UEFI whole-disk, squashfs|read-only rootfs plus overlay, supports failsafe reset; dd to the target disk' ;;
+    bios-squashfs) printf 'BIOS whole-disk, squashfs|read-only rootfs plus overlay, supports failsafe reset; dd to the target disk' ;;
+    efi-disk)      printf 'UEFI whole-disk|dd to the target disk' ;;
+    bios-disk)     printf 'BIOS whole-disk|dd to the target disk' ;;
+    efi-iso)       printf 'UEFI install media|bootable ISO, UEFI' ;;
+    bios-iso)      printf 'BIOS install media|bootable ISO, legacy BIOS' ;;
+    ddr)           printf 'DDR blob|MediaTek RAM training blob used by the ubootmod flow; only the one matching this board applies' ;;
+  esac
+}
+
+# Rows follow install order, not the alphabet: a reader works down this list.
+# A key with no file this build simply prints no row.
+USE_ORDER='tftp upgrade factory recovery bl2 fip
+efi-ext4 bios-ext4 efi-squashfs bios-squashfs efi-disk bios-disk efi-iso bios-iso ddr'
+
+# Every artifact of a build shares one prefix, derived from TARGET rather than
+# guessed by comparing filenames: x86/64 -> 'openwrt-x86-64-'. Stripping it is
+# what keeps a transposed row narrow enough to read.
+img_prefix() {
+  [ -n "${TARGET:-}" ] || return 0
+  printf 'openwrt-%s-' "$(printf '%s' "$TARGET" | tr '/' '-')"
 }
 
 # The image list is read from the upload dir, not from profiles.json: what we are
 # about to publish is the only truth, so the notes cannot name a file that will
 # not be there.
+#
+# Transposed on purpose. use_of() keys off the filename suffix, so every device
+# of a build gets the SAME description for its same-type file — printed once per
+# device it is pure repetition, and with three profiles it drowns the table. As
+# a column header it is stated once, and the empty cells then say something the
+# old per-device tables could not: only the ubootmod profile takes a BL2 or FIP.
 images_block() {
   [ -n "$updir" ] && [ -d "$updir" ] || return 0
   _files=$(find "$updir" -maxdepth 1 -type f ! -name sha256sums -exec basename {} \; | sort)
   [ -n "$_files" ] || return 0
-  _pairs=''
+
+  _pfx=$(img_prefix)
+  # rows are "device|usekey|filename"; device is empty when nothing claims it
+  _rows=''
   for _f in $_files; do
-    _pairs="$_pairs$(device_of "$_f")|$_f
+    _rows="$_rows$(device_of "$_f")|$(use_of "$_f")|$_f
 "
   done
-  printf '### Images & flashing\n'
-  # a single nameless profile (x86's 'generic') gets no heading: there is nothing
-  # to tell apart, and '#### generic' would only take up room
-  _bare=0
-  if [ "$(printf '%s\n' "$ids_show" | grep -c .)" = 1 ] && [ -z "$(device_title "$ids_show")" ]; then
-    _bare=1
-  fi
-  # '' last: files no device claimed. Surfacing them beats hiding them — an
-  # unexpected artifact is exactly what someone needs to see.
-  for _d in $ids_show ''; do
-    _sel=$(printf '%s' "$_pairs" | sed -n "s/^$_d|//p")
-    [ -n "$_sel" ] || continue
-    # backticks here are markdown; keeping them in single quotes says so and
-    # keeps them out of any printf format string
-    if [ -z "$_d" ]; then
-      printf '\n#### Unclassified\n'
-    elif [ "$_bare" = 0 ]; then
-      _h='`'$_d'`'
-      _t=$(device_title "$_d")
-      if [ -n "$_t" ]; then _h="$_t · $_h"; fi
-      printf '\n#### %s\n' "$_h"
-    fi
-    printf '\n| File | Purpose |\n|---|---|\n'
-    for _f in $_sel; do
-      # shellcheck disable=SC2016
-      printf '| `%s` | %s |\n' "$_f" "$(purpose "$_f")"
-    done
+
+  # columns: devices that actually got a file, in the order a human reads them.
+  # Counted as they are collected — splitting the list again later to measure it
+  # is the kind of thing that works until a device id contains a glob character.
+  _cols=''; _ncols=0
+  for _d in $ids_show; do
+    case "
+$_rows" in
+      *"
+$_d|"*) _cols="$_cols $_d"; _ncols=$((_ncols + 1)) ;;
+    esac
   done
+
+  printf '### Images & flashing\n\n'
+
+  # One device needs no column of its own: there is nothing to tell apart, and
+  # its name would only push the filenames further right.
+  _multi=0
+  if [ "$_ncols" -gt 1 ]; then _multi=1; fi
+
+  if [ "$_multi" = 1 ]; then
+    _hdr='| Use |'; _sep='|---|'
+    for _d in $_cols; do
+      _t=$(device_title "$_d"); [ -n "$_t" ] || _t=$_d
+      _hdr="$_hdr $_t |"; _sep="$_sep---|"
+    done
+    printf '%s\n%s\n' "$_hdr" "$_sep"
+  else
+    printf '| Use | File |\n|---|---|\n'
+  fi
+
+  _stripped=0
+  for _k in $USE_ORDER; do
+    _lbl=$(use_meta "$_k")
+    [ -n "$_lbl" ] || continue
+    _line="| **${_lbl%%|*}** — ${_lbl#*|} |"
+    _any=0
+    for _d in $_cols; do
+      _cell=''
+      for _n in $(printf '%s' "$_rows" | sed -n "s/^$_d|$_k|//p"); do
+        case "$_n" in
+          "$_pfx"*) _short=${_n#"$_pfx"}; _stripped=1 ;;
+          *) _short=$_n ;;
+        esac
+        _cell="$_cell${_cell:+<br>}\`$_short\`"
+        _any=1
+      done
+      [ -n "$_cell" ] || _cell='—'
+      _line="$_line $_cell |"
+    done
+    if [ "$_any" = 1 ]; then printf '%s\n' "$_line"; fi
+  done
+
+  # shellcheck disable=SC2016
+  if [ "$_stripped" = 1 ]; then
+    printf '\nAll filenames start with `%s`.\n' "$_pfx"
+  fi
+
+  # Files no device claimed. Surfacing them beats hiding them — an unexpected
+  # artifact is exactly what someone needs to see — but a table of them, with a
+  # blank Purpose column because no device gives them meaning, is worse than a
+  # sentence. So: one line per use, and every name spelled out. A count with one
+  # sample name would read as N copies of that file, and "only the one matching
+  # this board applies" is advice nobody can act on without the full list.
+  _unc=$(printf '%s' "$_rows" | sed -n 's/^|//p')
+  if [ -n "$_unc" ]; then
+    for _k in $USE_ORDER unknown; do
+      if [ "$_k" = unknown ]; then
+        _sel=$(printf '%s\n' "$_unc" | sed -n 's/^|//p')
+        _desc='not claimed by any device of this build'
+      else
+        _sel=$(printf '%s\n' "$_unc" | sed -n "s/^$_k|//p")
+        _lbl=$(use_meta "$_k"); _desc=${_lbl#*|}
+      fi
+      [ -n "$_sel" ] || continue
+      _names=$(printf '%s\n' "$_sel" | awk 'NF { printf "%s`%s`", (n++ ? ", " : ""), $0 }')
+      printf '\nPlus %s — %s.\n' "$_names" "$_desc"
+    done
+  fi
 }
 
 # --------------------------------------------------------------- packages ----
@@ -178,27 +285,53 @@ images_block() {
 # package names stay literal
 pkgver() { awk -v p="$2" '$1 == p && $2 == "-" { print $3; exit }' "$1"; }
 
-# Every package our third-party repos define. Candidates come from the Makefiles
-# they ship; a name the firmware does not contain prints no row, so guessing wide
-# here is harmless and no list needs maintaining.
-custom_packages() {
+# Every package our third-party repos define, tagged with the repo that defines
+# it. Candidates come from the Makefiles they ship; a name the firmware does not
+# contain prints no row, so guessing wide here is harmless and no list needs
+# maintaining. The repo tag is what lets one table answer both "what is
+# installed" and "where did it come from".
+custom_packages() { # -> repo|package
   [ -n "$custom" ] && [ -d "$custom" ] || return 0
   for repo in "$custom"/*; do
     [ -d "$repo" ] || continue
+    _rn=$(basename "$repo")
     find "$repo" -maxdepth 3 -name Makefile 2>/dev/null | sort | while IFS= read -r mk; do
       # every 'define Package/<name>' the Makefile declares literally
-      sed -n 's/^define Package\/\([A-Za-z0-9._+-]*\)[[:space:]]*$/\1/p' "$mk"
+      sed -n "s/^define Package\/\([A-Za-z0-9._+-]*\)[[:space:]]*$/$_rn|\1/p" "$mk"
       # luci packages declare none of their own — luci.mk names them after the dir
-      basename "$(dirname "$mk")"
+      printf '%s|%s\n' "$_rn" "$(basename "$(dirname "$mk")")"
     done
   done
 }
 
-# One row per package. When a build's devices do not all carry the same set —
-# tr3000 gives nikki to the 256 MB variant only — a column per device shows who
-# has what. When they do agree the extra columns say nothing, so they are dropped.
+gh_slug() { # $1 git url -> owner/repo, empty when it is not a github url
+  case "$1" in
+    https://github.com/*) _s=${1#https://github.com/}; printf '%s' "${_s%.git}" ;;
+  esac
+}
+
+repo_url() { # $1 repo name -> git url from packages.ini
+  [ -f "$pkgini" ] || return 0
+  _u=$(packages_load "$pkgini" | sed -n "s/^$1|//p" | head -n 1)
+  printf '%s' "${_u%%|*}"
+}
+
+repo_sha() { # $1 repo name -> "`abc1234`" plus ↑ when it moved since last build
+  _rs=$(printf '%s' "${PKG_REPOS:-}" | tr ' ' '\n' | sed -n "s/^$1@//p" | head -n 1)
+  [ -n "$_rs" ] || return 0
+  # shellcheck disable=SC2016
+  printf '`%s`' "$(printf '%s' "$_rs" | cut -c1-7)"
+  _rp=$(printf '%s' "${PREV_PKG_REPOS:-}" | tr ' ' '\n' | sed -n "s/^$1@//p" | head -n 1)
+  # first sighting is not a change: there is nothing to have changed from
+  if [ -n "$_rp" ] && [ "$_rp" != "$_rs" ]; then printf ' ↑'; fi
+}
+
+# One row per package: what it is, which version shipped, and which repo it came
+# from. When a build's devices do not all carry the same set — tr3000 gives nikki
+# to the 256 MB variant only — a column per device shows who has what. When they
+# do agree the extra columns say nothing, so they are dropped.
 packages_block() {
-  _cands=$(custom_packages | awk '!seen[$0]++')
+  _cands=$(custom_packages | awk -F'|' 'NF == 2 && !seen[$2]++')
   [ -n "$_cands" ] || return 0
   _devs=''
   for _d in $ids_show; do
@@ -210,11 +343,13 @@ packages_block() {
     [ -n "$_lone" ] || return 0
   fi
 
-  # rows are "name|version|flag flag ..." aligned to $_devs (no flags when _lone).
-  # $_allflags accumulates just the flags: deciding "do the devices differ?" by
-  # grepping whole rows would hit the '0' in a version string like 1.1.1-r20260712
-  _rows=''; _allflags=''
-  for _p in $_cands; do
+  # rows are "name|version|repo|flag flag ..." aligned to $_devs (no flags when
+  # _lone). $_allflags accumulates just the flags: deciding "do the devices
+  # differ?" by grepping whole rows would hit the '0' in a version string like
+  # 1.1.1-r20260712
+  _rows=''; _allflags=''; _seen_repos=''
+  for _c in $_cands; do
+    _rn=${_c%%|*}; _p=${_c#*|}
     _ver=''; _flags=''
     if [ -n "$_lone" ]; then
       _ver=$(pkgver "$_lone" "$_p")
@@ -232,128 +367,137 @@ packages_block() {
     # 'if', not '&& ...': a candidate missing from every manifest is the normal
     # case, and as the last one it would make the whole loop exit non-zero
     if [ -n "$_ver" ]; then
-      _rows="$_rows$_p|$_ver|$_flags
+      _rows="$_rows$_p|$_ver|$_rn|$_flags
 "
       _allflags="$_allflags$_flags"
+      _seen_repos="$_seen_repos $_rn"
     fi
   done
   [ -n "$_rows" ] || return 0
 
-  printf '### Bundled packages\n\n'
+  printf '### Packages\n\n'
   # every package on every device -> the per-device columns would say nothing
   case "$_allflags" in *0*) _differ=1 ;; *) _differ=0 ;; esac
-  if [ -n "$_lone" ] || [ "$_differ" = 0 ]; then
-    printf '| Package | Version |\n|---|---|\n'
-    printf '%s' "$_rows" | while IFS='|' read -r _p _v _; do
-      [ -n "$_p" ] && printf '| %s | %s |\n' "$_p" "$_v"
+  _hdr='| Package | Version | Source |'; _sep='|---|---|---|'
+  if [ -z "$_lone" ] && [ "$_differ" = 1 ]; then
+    for _d in $_devs; do
+      _hdr="$_hdr $_d |"; _sep="$_sep---|"
     done
-    return 0
   fi
-  _hdr='| Package | Version |'; _sep='|---|---|'
-  for _d in $_devs; do
-    _hdr="$_hdr $_d |"; _sep="$_sep---|"
-  done
   printf '%s\n%s\n' "$_hdr" "$_sep"
-  printf '%s' "$_rows" | while IFS='|' read -r _p _v _fl; do
+  printf '%s' "$_rows" | while IFS='|' read -r _p _v _rn _fl; do
     [ -n "$_p" ] || continue
-    _line="| $_p | $_v |"
-    for _f in $_fl; do
-      if [ "$_f" = 1 ]; then _line="$_line ✓ |"; else _line="$_line — |"; fi
-    done
+    _src=$_rn
+    _rsha=$(repo_sha "$_rn")
+    if [ -n "$_rsha" ]; then _src="$_rn $_rsha"; fi
+    _line="| $_p | $_v | $_src |"
+    if [ -z "$_lone" ] && [ "$_differ" = 1 ]; then
+      for _f in $_fl; do
+        if [ "$_f" = 1 ]; then _line="$_line ✓ |"; else _line="$_line — |"; fi
+      done
+    fi
     printf '%s\n' "$_line"
   done
-}
 
-# ------------------------------------------------------------ plugin repos ----
-
-gh_slug() { # $1 git url -> owner/repo, empty when it is not a github url
-  case "$1" in
-    https://github.com/*) _s=${1#https://github.com/}; printf '%s' "${_s%.git}" ;;
-  esac
-}
-
-# PKG_REPOS is "name@sha ..." as resolved by make-matrix.sh; PREV_PKG_REPOS is
-# the same list recorded by the previous release. Only a compare link is offered:
-# a commit count would need one API call per repo and would cost this script its
-# offline testability.
-repos_block() {
-  [ -n "${PKG_REPOS:-}" ] || return 0
-  _urls=''
-  if [ -f "$pkgini" ]; then _urls=$(packages_load "$pkgini"); fi
-  _rows=''; _n=0; _changed=0
-  for _e in $PKG_REPOS; do
-    _name=${_e%@*}; _sha=${_e##*@}
-    _n=$((_n + 1))
-    _prev=$(printf '%s' "${PREV_PKG_REPOS:-}" | tr ' ' '\n' | sed -n "s/^$_name@//p" | head -n 1)
-    _url=$(printf '%s\n' "$_urls" | sed -n "s/^$_name|//p" | head -n 1)
-    _url=${_url%%|*}
-    _slug=$(gh_slug "$_url")
-    if [ -z "$_prev" ]; then
-      _note='first recorded'
-    elif [ "$_prev" = "$_sha" ]; then
-      _note='unchanged'
-    else
-      _changed=$((_changed + 1))
-      if [ -n "$_slug" ]; then
-        _note="[compare with previous build](https://github.com/$_slug/compare/$_prev...$_sha)"
-      else
-        _note="$(printf '%s' "$_prev" | cut -c1-7) → $(printf '%s' "$_sha" | cut -c1-7)"
-      fi
-    fi
-    _rows="$_rows| $_name | \`$(printf '%s' "$_sha" | cut -c1-7)\` | $_note |
-"
+  # A repo that shipped nothing has no row, and silence there reads as "not
+  # cloned" when it actually means "cloned, but this build enables none of it" —
+  # the difference between a config that is off and a config that is broken.
+  _idle=''
+  for _e in ${PKG_REPOS:-}; do
+    _rn=${_e%@*}
+    case " $_seen_repos " in
+      *" $_rn "*) ;;
+      *) _idle="$_idle${_idle:+, }$_rn $(repo_sha "$_rn")" ;;
+    esac
   done
-  [ -n "$_rows" ] || return 0
-  printf '<details>\n<summary>Plugin sources (%s repos, %s updated)</summary>\n\n' "$_n" "$_changed"
-  printf '| Repository | Version | Change |\n|---|---|---|\n%s\n</details>\n' "$_rows"
+  # 'if', not '&& ...': as the function's last statement a false test would make
+  # it return 1, and under set -e the caller's $(...) dies with it
+  if [ -n "$_idle" ]; then
+    printf '\n%s — cloned, not enabled in this build.\n' "$_idle"
+  fi
+}
+
+# ---------------------------------------------------------------- changes ----
+
+# Commit subjects, not a link. "What changed upstream" is the question a reader
+# actually has, and a link answers it only after a trip off the page. Folded so
+# a busy week cannot push the images out of sight.
+upstream_block() {
+  [ -n "${UPSTREAM_LOG:-}" ] || return 0
+  _n=$(printf '%s\n' "$UPSTREAM_LOG" | grep -c .)
+  # the compare API caps a page at 250; saying so beats a silent truncation
+  if [ -n "${UPSTREAM_TOTAL:-}" ] && [ "$UPSTREAM_TOTAL" -gt "$_n" ] 2>/dev/null; then
+    printf '<details>\n<summary>Upstream changes · %s of %s commits</summary>\n\n' "$_n" "$UPSTREAM_TOTAL"
+  else
+    printf '<details>\n<summary>Upstream changes · %s commits</summary>\n\n' "$_n"
+  fi
+  printf '%s\n' "$UPSTREAM_LOG" | sed 's/^/- /'
+  if [ -n "${PREV_SHA:-}" ] && [ -n "${SOURCE_REPO:-}" ]; then
+    printf '\n[full compare](https://github.com/%s/compare/%s...%s)\n' \
+      "$SOURCE_REPO" "$PREV_SHA" "${SOURCE_SHA:-}"
+  fi
+  printf '</details>\n'
+}
+
+# The same question, asked of our own repos: the Packages table says a source
+# moved, this says what moved in it. PLUGIN_LOG lines are "repo|subject".
+plugin_changes_block() {
+  [ -n "${PLUGIN_LOG:-}" ] || return 0
+  _n=$(printf '%s\n' "$PLUGIN_LOG" | grep -c .)
+  _repos=$(printf '%s\n' "$PLUGIN_LOG" | sed -n 's/|.*//p' | awk 'NF && !seen[$0]++')
+  _rn=$(printf '%s\n' "$_repos" | grep -c .)
+  printf '<details>\n<summary>Plugin changes · %s repos, %s commits</summary>\n\n' "$_rn" "$_n"
+  for _r in $_repos; do
+    _slug=$(gh_slug "$(repo_url "$_r")")
+    _cur=$(printf '%s' "${PKG_REPOS:-}" | tr ' ' '\n' | sed -n "s/^$_r@//p" | head -n 1)
+    _prev=$(printf '%s' "${PREV_PKG_REPOS:-}" | tr ' ' '\n' | sed -n "s/^$_r@//p" | head -n 1)
+    # backticks below are markdown, not command substitution
+    # shellcheck disable=SC2016
+    if [ -n "$_slug" ] && [ -n "$_prev" ] && [ -n "$_cur" ]; then
+      printf '**[%s](https://github.com/%s/compare/%s...%s)** `%s`\n' \
+        "$_r" "$_slug" "$_prev" "$_cur" "$(printf '%s' "$_cur" | cut -c1-7)"
+    else
+      printf '**%s** `%s`\n' "$_r" "$(printf '%s' "$_cur" | cut -c1-7)"
+    fi
+    printf '%s\n' "$PLUGIN_LOG" | sed -n "s/^$_r|/- /p"
+    printf '\n'
+  done
+  printf '</details>\n'
 }
 
 # ---------------------------------------------------------------- scalars ----
 
 short=$(printf '%s' "${SOURCE_SHA:-}" | cut -c1-7)
-changes=''
-if [ -n "${PREV_SHA:-}" ] && [ "$PREV_SHA" != "${SOURCE_SHA:-}" ]; then
-  changes="[upstream commits since previous build](https://github.com/${SOURCE_REPO}/compare/${PREV_SHA}...${SOURCE_SHA})"
-fi
-# DATE is YYYYMMDD-HHMM, the suffix that keeps same-day tags apart. Spelled out
-# here so the '-2102' in a tag name means something to whoever reads the release.
-built_at=${DATE:-}
-case "${DATE:-}" in
-  [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9])
-    _dd=${DATE%-*}; _tt=${DATE#*-}
-    built_at="$(printf %s "$_dd" | cut -c1-4)-$(printf %s "$_dd" | cut -c5-6)-$(printf %s "$_dd" | cut -c7-8)"
-    built_at="$built_at $(printf %s "$_tt" | cut -c1-2):$(printf %s "$_tt" | cut -c3-4) (Asia/Shanghai)"
-    ;;
-esac
 
 lookup() { # $1 placeholder name -> value ('' means: drop the line)
   case "$1" in
-    build)           printf '%s' "${BUILD:-}" ;;
     kernel)          printf '%s' "${KERNEL:-unknown}" ;;
-    built_at)        printf '%s' "$built_at" ;;
     target)          printf '%s' "${TARGET:-}" ;;
     source)          printf "%s@\`%s\` (%s)" "${SOURCE_REPO:-}" "$short" "${SOURCE_REF:-}" ;;
-    changes)         printf '%s' "$changes" ;;
     wifi_ssid)       setting WIFI_SSID ;;
     wifi_ssid_5g)    setting WIFI_SSID_5G ;;
     wifi_key)        setting WIFI_KEY ;;
     wifi_country)    setting WIFI_COUNTRY ;;
     wifi_encryption) setting WIFI_ENCRYPTION sae-mixed ;;
-    lan_ip)          setting LAN_IP ;;
-    build_by)        setting BUILD_BY ;;
+    # unset LAN_IP is not "unknown", it is OpenWrt's own default -- and the
+    # address is the first thing a freshly flashed box needs, so the line that
+    # used to vanish now states what actually answers.
+    lan_ip)          setting LAN_IP 192.168.1.1 ;;
     *) die "unknown placeholder {{$1}} in $template" ;;
   esac
 }
 
 blk_images=$(images_block)
 blk_packages=$(packages_block)
-blk_repos=$(repos_block)
+blk_upstream=$(upstream_block)
+blk_plugins=$(plugin_changes_block)
 
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
-    *'{{images}}'*)        [ -n "$blk_images" ]   && printf '%s\n' "$blk_images";   continue ;;
-    *'{{packages}}'*)      [ -n "$blk_packages" ] && printf '%s\n' "$blk_packages"; continue ;;
-    *'{{package_repos}}'*) [ -n "$blk_repos" ]    && printf '%s\n' "$blk_repos";    continue ;;
+    *'{{images}}'*)         [ -n "$blk_images" ]   && printf '%s\n' "$blk_images";   continue ;;
+    *'{{packages}}'*)       [ -n "$blk_packages" ] && printf '%s\n' "$blk_packages"; continue ;;
+    *'{{upstream}}'*)       [ -n "$blk_upstream" ] && printf '%s\n' "$blk_upstream"; continue ;;
+    *'{{plugin_changes}}'*) [ -n "$blk_plugins" ]  && printf '%s\n' "$blk_plugins";  continue ;;
   esac
   drop=0
   while :; do
