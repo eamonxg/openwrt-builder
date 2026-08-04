@@ -19,7 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
-      contents: write
+      contents: write   # releases
+      actions: write    # delete this build's superseded toolchain caches on a miss
     env:
       GH_TOKEN: ${{ github.token }}
       BUILD: ${{ inputs.build }}
@@ -192,6 +193,22 @@ jobs:
             openwrt/staging_dir/host*
             openwrt/staging_dir/tool*
           key: toolchain-${{ inputs.build }}-${{ steps.tckey.outputs.hash }}
+
+      # A miss means the key moved, and this cache is looked up by exact key with
+      # no restore-keys — so every entry already stored for this build is now
+      # unreachable forever, not merely old. Delete them here rather than leaving
+      # them to the prune job: that runs after all three builds have uploaded a
+      # fresh ~1.3 GB ccache, which is exactly when the 10 GB quota is tightest
+      # and an eviction would land on something still wanted.
+      # KEEP=0 because none of them can ever be restored again. The cost of being
+      # wrong is a rebuild, never a wrong build, and the prune job still holds
+      # KEEP=2 as the ordinary rolling policy for the hit path.
+      - name: Drop superseded toolchain caches
+        if: ${{ !inputs.test_only && !inputs.clean_build && steps.toolchain.outputs.cache-hit != 'true' }}
+        env:
+          REPO: ${{ github.repository }}
+          KEEP: '0'
+        run: bash builder/scripts/prune-caches.sh "toolchain-${BUILD}-"
 
       # The other half is an accumulating blob that wants rolling updates, which
       # is why it is a separate entry: sharing one key with the toolchain would

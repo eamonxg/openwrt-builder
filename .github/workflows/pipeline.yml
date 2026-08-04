@@ -61,6 +61,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     permissions:
       contents: write
+      actions: write
     with:
       build: ${{ matrix.build }}
       source_repo: ${{ matrix.source_repo }}

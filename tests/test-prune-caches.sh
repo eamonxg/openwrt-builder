@@ -46,4 +46,20 @@ sort "$tmp/deleted" > "$tmp/got"
 # jdcloud_nss entry (5) is within KEEP for its own prefix and must survive
 printf '%s\n' 1 2 6 > "$tmp/want"
 diff -u "$tmp/want" "$tmp/got" || { echo "FAIL: wrong delete set"; exit 1; }
+
+# Explicit prefixes: what a build job calls on a toolchain cache miss. Only the
+# named prefix is touched — builds.ini is not even read, so a build may prune
+# its own entries without knowing what else the repo builds — and KEEP=0 takes
+# every one of them, because a missed key with no restore-keys means none of
+# them can ever be restored again.
+: > "$tmp/deleted"
+# plain assignment, not a 'KEEP=0 main' prefix: for a shell function that would
+# leak the value into the rest of the test instead of scoping it to the call
+KEEP=0
+main "toolchain-jdcloud-"
+sort -n "$tmp/deleted" > "$tmp/got"
+printf '%s\n' 6 7 8 > "$tmp/want"
+diff -u "$tmp/want" "$tmp/got" || {
+  echo "FAIL: explicit prefix with KEEP=0 must delete every toolchain-jdcloud- entry and nothing else"; exit 1; }
+
 echo "PASS: test-prune-caches"

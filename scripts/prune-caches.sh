@@ -30,6 +30,15 @@ main() {
   case "$KEEP" in
     ''|*[!0-9]*) die "KEEP must be a non-negative integer, got: $KEEP" ;;
   esac
+  # Given prefixes, prune exactly those and nothing else. A build job uses this
+  # to drop its own superseded entries the moment they become unreachable,
+  # rather than leaving them for the prune job at the end of the pipeline —
+  # by then all three builds have uploaded a fresh ccache and the quota is at
+  # its peak, which is the worst time to still be holding dead weight.
+  if [ "$#" -gt 0 ]; then
+    for p in "$@"; do prune_prefix "$p"; done
+    return
+  fi
   local records name
   records=$(builds_load "$ROOT/firmware/builds.ini") || die "builds.ini parse failed"
   while IFS='|' read -r name _; do
