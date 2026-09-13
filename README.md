@@ -202,5 +202,5 @@ the pipeline by hand once.
 ## Trigger & artifacts
 
 - Manual: Actions → Pipeline, with optional build filter (comma-separated names or all), test_only (validate config, no compile), clean_build (no caches), temporary source override
-- Scheduled: daily at 02:00 Beijing time; builds with unchanged upstream are skipped
+- Scheduled: every Friday at 02:00 Beijing time; builds with unchanged upstream are skipped
 - Artifacts: one release per build (`<name>-date-time`), latest 3 kept; flashable firmware plus a regenerated `sha256sums` only, under original OpenWrt filenames

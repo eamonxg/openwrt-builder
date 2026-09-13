@@ -23,7 +23,7 @@ on:
         default: ''
         type: string
   schedule:
-    - cron: '0 18 * * *'   # 18:00 UTC = 02:00 Beijing, daily; unchanged-upstream builds are skipped
+    - cron: '0 18 * * 4'   # Thu 18:00 UTC = Fri 02:00 Beijing, weekly; unchanged-upstream builds are skipped
 
 permissions:
   contents: write
